@@ -4,7 +4,7 @@
 // @description      Get DLC Info from SteamDB
 // @author           Sak32009
 // @contributor      cs.rin.ru
-// @version          3.6.8
+// @version          3.7.0
 // @license          MIT
 // @homepageURL      https://github.com/Sak32009/GetDLCInfoFromSteamDB/
 // @supportURL       http://cs.rin.ru/forum/viewtopic.php?f=10&t=71837
@@ -14,9 +14,9 @@
 // @icon64           https://raw.githubusercontent.com/Sak32009/GetDLCInfoFromSteamDB/master/sak32009-get-dlc-info-from-steamdb-64.png
 // @match            *://steamdb.info/app/*
 // @match            *://steamdb.info/search/*
-// @require          https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js
+// @require          https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js
 // @require          https://raw.githubusercontent.com/zewish/rmodal.js/master/dist/rmodal.min.js
-// @require          https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/1.3.8/FileSaver.min.js
+// @require          https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js
 // @require          https://steamdb.info/static/js/tabbable.4f8f7fce.js
 // @grant            GM.xmlHttpRequest
 // @grant            GM_xmlhttpRequest
@@ -36,26 +36,188 @@ if (typeof GM_xmlhttpRequest !== "function") {
     GM_xmlhttpRequest = GM.xmlHttpRequest;
 }
 
+// ERROR HANDLER
+const ErrorHandler = {
+
+    // Error types
+    types: {
+        NETWORK: 'NetworkError',
+        DOM: 'DOMError',
+        STORAGE: 'StorageError',
+        PARSE: 'ParseError',
+        VALIDATION: 'ValidationError',
+        TIMEOUT: 'TimeoutError',
+        UNKNOWN: 'UnknownError'
+    },
+
+    // Log error to console with context
+    log(error, context = '', type = this.types.UNKNOWN) {
+        const timestamp = new Date().toISOString();
+        const errorMessage = error?.message || error?.toString() || 'Unknown error';
+        const errorStack = error?.stack || 'No stack trace available';
+
+        console.error(`[${GM_info.script.name} v${GM_info.script.version}]`, {
+            timestamp,
+            type,
+            context,
+            message: errorMessage,
+            stack: errorStack,
+            error
+        });
+    },
+
+    // Show user-friendly notification
+    notify(message, isError = true) {
+        try {
+            const prefix = isError ? '❌ Error: ' : '✓ ';
+            const style = isError
+                ? 'background: #ff4444; color: white; padding: 10px; border-radius: 5px; position: fixed; top: 20px; right: 20px; z-index: 999999; box-shadow: 0 2px 10px rgba(0,0,0,0.3);'
+                : 'background: #44ff44; color: black; padding: 10px; border-radius: 5px; position: fixed; top: 20px; right: 20px; z-index: 999999; box-shadow: 0 2px 10px rgba(0,0,0,0.3);';
+
+            const notification = $(`<div style="${style}">${prefix}${message}</div>`);
+            $('body').append(notification);
+
+            setTimeout(() => {
+                notification.fadeOut(500, function() {
+                    $(this).remove();
+                });
+            }, 5000);
+        } catch (e) {
+            // Fallback to alert if DOM manipulation fails
+            alert(`${isError ? 'Error' : 'Success'}: ${message}`);
+        }
+    },
+
+    // Handle error with logging and notification
+    handle(error, context = '', type = this.types.UNKNOWN, showNotification = true) {
+        this.log(error, context, type);
+
+        if (showNotification) {
+            const userMessage = this.getUserMessage(error, type);
+            this.notify(userMessage, true);
+        }
+    },
+
+    // Get user-friendly error message
+    getUserMessage(error, type) {
+        const messages = {
+            [this.types.NETWORK]: 'Network connection failed. Please check your internet connection.',
+            [this.types.DOM]: 'Failed to access page elements. Please reload the page.',
+            [this.types.STORAGE]: 'Local storage error. Please check your browser settings.',
+            [this.types.PARSE]: 'Failed to parse data. The page structure may have changed.',
+            [this.types.VALIDATION]: 'Invalid data detected. Please verify your input.',
+            [this.types.TIMEOUT]: 'Request timed out. Please try again.',
+            [this.types.UNKNOWN]: 'An unexpected error occurred.'
+        };
+
+        return messages[type] || messages[this.types.UNKNOWN];
+    },
+
+    // Wrap function with try-catch
+    wrap(fn, context = '', type = this.types.UNKNOWN) {
+        return function(...args) {
+            try {
+                return fn.apply(this, args);
+            } catch (error) {
+                ErrorHandler.handle(error, context, type);
+                return null;
+            }
+        };
+    },
+
+    // Wrap async function with try-catch
+    wrapAsync(fn, context = '', type = this.types.UNKNOWN) {
+        return async function(...args) {
+            try {
+                return await fn.apply(this, args);
+            } catch (error) {
+                ErrorHandler.handle(error, context, type);
+                return null;
+            }
+        };
+    }
+};
+
+// VALIDATOR
+const Validator = {
+
+    // Check if element exists
+    elementExists($element, name = 'Element') {
+        if (!$element || $element.length === 0) {
+            throw new Error(`${name} not found in DOM`);
+        }
+        return true;
+    },
+
+    // Validate string is not empty
+    notEmpty(value, name = 'Value') {
+        if (!value || (typeof value === 'string' && value.trim().length === 0)) {
+            throw new Error(`${name} is empty or invalid`);
+        }
+        return true;
+    },
+
+    // Validate AppID
+    isValidAppID(appID) {
+        const parsed = parseInt(appID, 10);
+        if (isNaN(parsed) || parsed <= 0) {
+            throw new Error(`Invalid AppID: ${appID}`);
+        }
+        return true;
+    },
+
+    // Validate URL
+    isValidURL(url) {
+        try {
+            new URL(url);
+            return true;
+        } catch {
+            throw new Error(`Invalid URL: ${url}`);
+        }
+    }
+};
+
 // DOWNLOAD
 const Download = {
 
     // WINDOWS LINE BREAK
     winLineBreak(str) {
-        return str.replace(/\n/g, "\r\n");
+        try {
+            Validator.notEmpty(str, 'Download content');
+            return str.replace(/\n/g, "\r\n");
+        } catch (error) {
+            ErrorHandler.handle(error, 'Download.winLineBreak', ErrorHandler.types.VALIDATION);
+            return str;
+        }
     },
 
     // ENCODE
     encode(str) {
-        return window.URL.createObjectURL(new Blob([this.winLineBreak(str)], {
-            type: "application/octet-stream;charset=utf-8"
-        }));
+        try {
+            Validator.notEmpty(str, 'Download content');
+            return window.URL.createObjectURL(new Blob([this.winLineBreak(str)], {
+                type: "application/octet-stream;charset=utf-8"
+            }));
+        } catch (error) {
+            ErrorHandler.handle(error, 'Download.encode', ErrorHandler.types.UNKNOWN);
+            return null;
+        }
     },
 
     // AS
     as(fileName, fileContent) {
-        saveAs(new Blob([this.winLineBreak(fileContent)], {
-            type: "application/octet-stream;charset=utf-8"
-        }), fileName);
+        try {
+            Validator.notEmpty(fileName, 'File name');
+            Validator.notEmpty(fileContent, 'File content');
+
+            saveAs(new Blob([this.winLineBreak(fileContent)], {
+                type: "application/octet-stream;charset=utf-8"
+            }), fileName);
+
+            ErrorHandler.notify(`File "${fileName}" downloaded successfully!`, false);
+        } catch (error) {
+            ErrorHandler.handle(error, 'Download.as', ErrorHandler.types.UNKNOWN);
+        }
     }
 
 };
@@ -66,24 +228,81 @@ const Storage = {
     // PREFIX
     prefix: `${GM_info.script.namespace}-`,
 
+    // Check if localStorage is available
+    isAvailable() {
+        try {
+            const test = '__storage_test__';
+            window.localStorage.setItem(test, test);
+            window.localStorage.removeItem(test);
+            return true;
+        } catch {
+            return false;
+        }
+    },
+
     // GET
     get(key) {
-        return window.localStorage.getItem(this.prefix + key);
+        try {
+            if (!this.isAvailable()) {
+                throw new Error('localStorage is not available');
+            }
+            Validator.notEmpty(key, 'Storage key');
+            return window.localStorage.getItem(this.prefix + key);
+        } catch (error) {
+            ErrorHandler.handle(error, `Storage.get(${key})`, ErrorHandler.types.STORAGE, false);
+            return null;
+        }
     },
 
     // SET
     set(key, value) {
-        window.localStorage.setItem(this.prefix + key, value);
+        try {
+            if (!this.isAvailable()) {
+                throw new Error('localStorage is not available');
+            }
+            Validator.notEmpty(key, 'Storage key');
+            window.localStorage.setItem(this.prefix + key, value);
+            return true;
+        } catch (error) {
+            ErrorHandler.handle(error, `Storage.set(${key})`, ErrorHandler.types.STORAGE);
+            return false;
+        }
     },
 
     // REMOVE
     remove(key) {
-        window.localStorage.removeItem(this.prefix + key);
+        try {
+            if (!this.isAvailable()) {
+                throw new Error('localStorage is not available');
+            }
+            Validator.notEmpty(key, 'Storage key');
+            window.localStorage.removeItem(this.prefix + key);
+            return true;
+        } catch (error) {
+            ErrorHandler.handle(error, `Storage.remove(${key})`, ErrorHandler.types.STORAGE);
+            return false;
+        }
     },
 
     // CLEAR
     clear() {
-        window.localStorage.clear();
+        try {
+            if (!this.isAvailable()) {
+                throw new Error('localStorage is not available');
+            }
+
+            // Only remove items with our prefix
+            const keys = Object.keys(window.localStorage);
+            keys.forEach(key => {
+                if (key.startsWith(this.prefix)) {
+                    window.localStorage.removeItem(key);
+                }
+            });
+            return true;
+        } catch (error) {
+            ErrorHandler.handle(error, 'Storage.clear', ErrorHandler.types.STORAGE);
+            return false;
+        }
     },
 
     // IS VALID
@@ -93,9 +312,148 @@ const Storage = {
 
     // IS CHECKED
     isChecked(key) {
-        return this.get(key) === "true";
+        const value = this.get(key);
+        return value === "true";
     }
 
+};
+
+// HTTP REQUEST HELPER
+const HTTPRequest = {
+
+    // Default timeout in milliseconds
+    DEFAULT_TIMEOUT: 30000,
+
+    // Max retry attempts
+    MAX_RETRIES: 3,
+
+    // Retry delay in milliseconds
+    RETRY_DELAY: 1000,
+
+    // Make HTTP request with Promise, timeout and retry logic
+    async fetch(url, options = {}) {
+        const {
+            method = 'GET',
+            headers = { 'Content-Type': 'application/x-www-form-urlencoded' },
+            timeout = this.DEFAULT_TIMEOUT,
+            retries = this.MAX_RETRIES,
+            retryDelay = this.RETRY_DELAY
+        } = options;
+
+        return new Promise((resolve, reject) => {
+            let attemptCount = 0;
+
+            const makeRequest = () => {
+                attemptCount++;
+
+                const timeoutId = setTimeout(() => {
+                    const error = new Error(`Request timeout after ${timeout}ms (attempt ${attemptCount}/${retries + 1})`);
+                    ErrorHandler.log(error, `HTTPRequest.fetch(${url})`, ErrorHandler.types.TIMEOUT);
+
+                    if (attemptCount <= retries) {
+                        ErrorHandler.log(
+                            new Error(`Retrying request in ${retryDelay}ms...`),
+                            `HTTPRequest.fetch(${url})`,
+                            ErrorHandler.types.NETWORK
+                        );
+                        setTimeout(makeRequest, retryDelay * attemptCount);
+                    } else {
+                        reject(error);
+                    }
+                }, timeout);
+
+                try {
+                    GM_xmlhttpRequest({
+                        method,
+                        url,
+                        headers,
+                        timeout,
+                        onload(response) {
+                            clearTimeout(timeoutId);
+
+                            if (response.status >= 200 && response.status < 300) {
+                                resolve(response);
+                            } else {
+                                const error = new Error(`HTTP ${response.status}: ${response.statusText}`);
+
+                                if (attemptCount <= retries && response.status >= 500) {
+                                    ErrorHandler.log(error, `HTTPRequest.fetch(${url})`, ErrorHandler.types.NETWORK);
+                                    ErrorHandler.log(
+                                        new Error(`Retrying request in ${retryDelay}ms...`),
+                                        `HTTPRequest.fetch(${url})`,
+                                        ErrorHandler.types.NETWORK
+                                    );
+                                    setTimeout(makeRequest, retryDelay * attemptCount);
+                                } else {
+                                    reject(error);
+                                }
+                            }
+                        },
+                        onerror(response) {
+                            clearTimeout(timeoutId);
+                            const error = new Error(`Network error: ${response.statusText || 'Unknown error'}`);
+
+                            if (attemptCount <= retries) {
+                                ErrorHandler.log(error, `HTTPRequest.fetch(${url})`, ErrorHandler.types.NETWORK);
+                                ErrorHandler.log(
+                                    new Error(`Retrying request in ${retryDelay}ms...`),
+                                    `HTTPRequest.fetch(${url})`,
+                                    ErrorHandler.types.NETWORK
+                                );
+                                setTimeout(makeRequest, retryDelay * attemptCount);
+                            } else {
+                                reject(error);
+                            }
+                        },
+                        ontimeout() {
+                            clearTimeout(timeoutId);
+                            const error = new Error(`Request timeout after ${timeout}ms (attempt ${attemptCount}/${retries + 1})`);
+
+                            if (attemptCount <= retries) {
+                                ErrorHandler.log(error, `HTTPRequest.fetch(${url})`, ErrorHandler.types.TIMEOUT);
+                                ErrorHandler.log(
+                                    new Error(`Retrying request in ${retryDelay}ms...`),
+                                    `HTTPRequest.fetch(${url})`,
+                                    ErrorHandler.types.NETWORK
+                                );
+                                setTimeout(makeRequest, retryDelay * attemptCount);
+                            } else {
+                                reject(error);
+                            }
+                        }
+                    });
+                } catch (error) {
+                    clearTimeout(timeoutId);
+                    reject(error);
+                }
+            };
+
+            makeRequest();
+        });
+    },
+
+    // Batch fetch with concurrency limit
+    async fetchAll(urls, concurrency = 5, options = {}) {
+        const results = [];
+        const errors = [];
+
+        for (let i = 0; i < urls.length; i += concurrency) {
+            const batch = urls.slice(i, i + concurrency);
+            const batchPromises = batch.map(async (url) => {
+                try {
+                    return await this.fetch(url, options);
+                } catch (error) {
+                    errors.push({ url, error });
+                    return null;
+                }
+            });
+
+            const batchResults = await Promise.all(batchPromises);
+            results.push(...batchResults);
+        }
+
+        return { results, errors };
+    }
 };
 
 // MAIN
@@ -151,11 +509,19 @@ const GetDLCInfofromSteamDB = {
 
     // RUN
     run() {
+        try {
+            // CHECK IF THE APPID HAS DLCs
+            const $check = $(".tab-pane#dlc .app[data-appid], #table-sortable .app[data-appid]");
 
-        // CHECK IF THE APPID HAS DLCs
-        const $check = $(".tab-pane#dlc .app[data-appid], #table-sortable .app[data-appid]").length > 0;
+            if ($check.length === 0) {
+                ErrorHandler.log(
+                    new Error('No DLC elements found on this page'),
+                    'GetDLCInfofromSteamDB.run',
+                    ErrorHandler.types.DOM
+                );
+                return;
+            }
 
-        if ($check) {
             // GET DATA
             this.getData();
             // CREATE INTERFACE
@@ -168,68 +534,143 @@ const GetDLCInfofromSteamDB = {
             this.loadOptions();
             // LOAD EVENTS
             this.loadEvents();
+        } catch (error) {
+            ErrorHandler.handle(error, 'GetDLCInfofromSteamDB.run', ErrorHandler.types.UNKNOWN);
         }
-
     },
 
     // GET DATA
     getData() {
-
-        // SET APPID
-        this.steamDB.appID = (this.info.isSearchPage ? ($(".tab-pane.selected input#inputAppID").val() || "NOT_FOUND") : $(".scope-app[data-appid]").data("appid")).toString().trim();
-        // SET APPID NAME
-        this.steamDB.appIDName = (this.info.isSearchPage ? ($(".tab-pane.selected input#inputQuery").val() || "NOT FOUND") : $("td[itemprop='name']").text()).trim();
-
-        // SET APPID DLCs
-        if (!this.info.isSearchPage) {
-            this.getDataDLCS();
-        }
-
-    },
-
-    // GET DATA DLCS
-    getDataDLCS() {
-
-        const objthis = this;
-
-        $(".tab-pane#dlc .app[data-appid], #table-sortable .app[data-appid]").each((_index, dom) => {
-
-            const $this = $(dom);
-
-            if (this.info.isSearchPage && $this.find("td:nth-of-type(2)").text().trim() !== "DLC") {
-                return;
+        try {
+            // SET APPID
+            if (this.info.isSearchPage) {
+                const $appIdInput = $(".tab-pane.selected input#inputAppID");
+                Validator.elementExists($appIdInput, 'AppID input');
+                this.steamDB.appID = ($appIdInput.val() || "NOT_FOUND").toString().trim();
+            } else {
+                const $scopeApp = $(".scope-app[data-appid]");
+                Validator.elementExists($scopeApp, 'Scope app element');
+                this.steamDB.appID = $scopeApp.data("appid").toString().trim();
             }
 
-            const appID = $this.data("appid");
-            const appIDName = $this.find(`td:nth-of-type(${this.info.isSearchPage ? 3 : 2})`).text().trim();
-            const appIDDateIndex = this.info.isSearchPage ? 4 : 3;
-            const appIDTime = $this.find(`td:nth-of-type(${appIDDateIndex})`).data("sort");
-            const appIDDate = $this.find(`td:nth-of-type(${appIDDateIndex})`).attr("title");
+            // Validate AppID
+            if (this.steamDB.appID !== "NOT_FOUND") {
+                Validator.isValidAppID(this.steamDB.appID);
+            }
 
-            GM_xmlhttpRequest({
-                method: "GET",
-                url: this.info.steamDBdepot + appID,
-                headers: {
-                    "Content-Type": "application/x-www-form-urlencoded"
-                },
-                onload(data) {
+            // SET APPID NAME
+            if (this.info.isSearchPage) {
+                const $queryInput = $(".tab-pane.selected input#inputQuery");
+                this.steamDB.appIDName = ($queryInput.val() || "NOT FOUND").toString().trim();
+            } else {
+                const $nameElement = $("td[itemprop='name']");
+                Validator.elementExists($nameElement, 'Name element');
+                this.steamDB.appIDName = $nameElement.text().trim();
+            }
 
-                    const $manifest = $($.parseHTML(data.responseText)).find("td:contains('Manifest ID')").closest("tr").find("td:nth-child(2)");
+            Validator.notEmpty(this.steamDB.appIDName, 'App name');
 
-                    objthis.steamDB.appIDDLCs[appID] = {
-                        name: appIDName,
-                        timestamp: appIDTime,
-                        date: appIDDate,
-                        manifestID: $manifest.length > 0 ? $manifest.text().trim() : 0
-                    };
+            // SET APPID DLCs
+            if (!this.info.isSearchPage) {
+                this.getDataDLCS();
+            }
 
-                    objthis.steamDB.appIDDLCsCount += 1;
+        } catch (error) {
+            ErrorHandler.handle(error, 'GetDLCInfofromSteamDB.getData', ErrorHandler.types.DOM);
+        }
+    },
 
+    // GET DATA DLCS (Modern async version)
+    async getDataDLCS() {
+        try {
+            const dlcElements = $(".tab-pane#dlc .app[data-appid], #table-sortable .app[data-appid]");
+            Validator.elementExists(dlcElements, 'DLC elements');
+
+            const dlcRequests = [];
+
+            dlcElements.each((_index, dom) => {
+                const $this = $(dom);
+
+                // Skip non-DLC items on search page
+                if (this.info.isSearchPage && $this.find("td:nth-of-type(2)").text().trim() !== "DLC") {
+                    return;
                 }
+
+                const appID = $this.data("appid");
+                const appIDName = $this.find(`td:nth-of-type(${this.info.isSearchPage ? 3 : 2})`).text().trim();
+                const appIDDateIndex = this.info.isSearchPage ? 4 : 3;
+                const appIDTime = $this.find(`td:nth-of-type(${appIDDateIndex})`).data("sort");
+                const appIDDate = $this.find(`td:nth-of-type(${appIDDateIndex})`).attr("title");
+
+                // Validate data
+                if (!appID || !appIDName) {
+                    ErrorHandler.log(
+                        new Error(`Invalid DLC data: appID=${appID}, name=${appIDName}`),
+                        'GetDLCInfofromSteamDB.getDataDLCS',
+                        ErrorHandler.types.VALIDATION
+                    );
+                    return;
+                }
+
+                // Add request to queue
+                dlcRequests.push({
+                    appID,
+                    appIDName,
+                    appIDTime,
+                    appIDDate,
+                    url: this.info.steamDBdepot + appID
+                });
             });
 
-        });
+            // Process requests in batches with concurrency limit
+            const batchSize = 5;
+            for (let i = 0; i < dlcRequests.length; i += batchSize) {
+                const batch = dlcRequests.slice(i, i + batchSize);
+                const batchPromises = batch.map(async (dlcData) => {
+                    try {
+                        const response = await HTTPRequest.fetch(dlcData.url, {
+                            timeout: 15000,
+                            retries: 2
+                        });
 
+                        // Parse response safely
+                        const parsedHTML = $.parseHTML(response.responseText);
+                        if (!parsedHTML) {
+                            throw new Error('Failed to parse HTML response');
+                        }
+
+                        const $manifest = $(parsedHTML)
+                            .find("td:contains('Manifest ID')")
+                            .closest("tr")
+                            .find("td:nth-child(2)");
+
+                        this.steamDB.appIDDLCs[dlcData.appID] = {
+                            name: dlcData.appIDName,
+                            timestamp: dlcData.appIDTime,
+                            date: dlcData.appIDDate,
+                            manifestID: $manifest.length > 0 ? $manifest.text().trim() : 0
+                        };
+
+                        this.steamDB.appIDDLCsCount += 1;
+
+                    } catch (error) {
+                        ErrorHandler.handle(
+                            error,
+                            `GetDLCInfofromSteamDB.getDataDLCS (appID: ${dlcData.appID})`,
+                            ErrorHandler.types.NETWORK,
+                            false // Don't show notification for individual DLC failures
+                        );
+                    }
+                });
+
+                await Promise.all(batchPromises);
+            }
+
+            console.log(`Successfully loaded ${this.steamDB.appIDDLCsCount} DLCs`);
+
+        } catch (error) {
+            ErrorHandler.handle(error, 'GetDLCInfofromSteamDB.getDataDLCS', ErrorHandler.types.UNKNOWN);
+        }
     },
 
     // CREATE INTERFACE
@@ -307,19 +748,25 @@ const GetDLCInfofromSteamDB = {
 
         // EVENT SUBMIT
         $(document).on("click", "#GetDLCInfofromSteamDB_submitInput", (e) => {
+            try {
+                e.preventDefault();
 
-            e.preventDefault();
+                // RESULT
+                let result = "";
+                // SELECTED FORMAT
+                const selectedFormat = $("#GetDLCInfofromSteamDB_selectInput option:selected").val();
 
-            // RESULT
-            let result = "";
-            // SELECTED FORMAT
-            const selectedFormat = $("#GetDLCInfofromSteamDB_selectInput option:selected").val();
-            // GET FORMAT DATA
-            const formatData = this.formats[selectedFormat];
-            const formatName = formatData.name;
+                // Validate format selection
+                if (!selectedFormat || !this.formats[selectedFormat]) {
+                    throw new Error('Invalid format selected');
+                }
 
-            // WRITE INFO
-            result += `; ${this.info.name} by ${this.info.author} v${this.info.version}
+                // GET FORMAT DATA
+                const formatData = this.formats[selectedFormat];
+                const formatName = formatData.name;
+
+                // WRITE INFO
+                result += `; ${this.info.name} by ${this.info.author} v${this.info.version}
 ; Format: ${formatName}
 ; AppID: ${this.steamDB.appID}
 ; AppID Name: ${this.steamDB.appIDName}
@@ -328,40 +775,51 @@ const GetDLCInfofromSteamDB = {
 ; Homepage: ${this.info.homepage}
 ; Support: ${this.info.support}\n\n`;
 
-            // CALLBACK
-            const formatCallback = formatData.callback({
-                info: result
-            }, this);
+                // CALLBACK
+                const formatCallback = formatData.callback({
+                    info: result
+                }, this);
 
-            // CALLBACK CHECK TYPE
-            if (typeof formatCallback === "object") {
+                // CALLBACK CHECK TYPE
+                if (typeof formatCallback === "object" && formatCallback !== null) {
 
-                // GET DLCs
-                result += this.bbcode(formatCallback.data);
+                    // GET DLCs
+                    result += this.bbcode(formatCallback.data);
 
-                // WRITE RESULT
-                $("#GetDLCInfofromSteamDB_textareaOutput").text(result).scrollTop(0);
+                    // WRITE RESULT
+                    const $textarea = $("#GetDLCInfofromSteamDB_textareaOutput");
+                    Validator.elementExists($textarea, 'Output textarea');
+                    $textarea.text(result).scrollTop(0);
 
-                // SET DOWNLOAD FILE
-                const setDwFile = $("#GetDLCInfofromSteamDB_downloadFile").attr({
-                    href: Download.encode(result),
-                    download: formatCallback.name
-                });
+                    // SET DOWNLOAD FILE
+                    const encodedData = Download.encode(result);
+                    if (encodedData) {
+                        const $downloadBtn = $("#GetDLCInfofromSteamDB_downloadFile");
+                        Validator.elementExists($downloadBtn, 'Download button');
 
-                // ..... AUTO DOWNLOAD
-                if (Storage.isChecked("globalAutoDownload")) {
-                    setDwFile[0].click();
+                        const setDwFile = $downloadBtn.attr({
+                            href: encodedData,
+                            download: formatCallback.name
+                        });
+
+                        // ..... AUTO DOWNLOAD
+                        if (Storage.isChecked("globalAutoDownload")) {
+                            setDwFile[0].click();
+                        }
+                        // .....
+                    }
+
+                }
+
+                // ..... SAVE LAST SELECTION
+                if (Storage.isChecked("globalSaveLastSelectionAndAutoSubmit")) {
+                    Storage.set("globalSaveLastSelectionValue", selectedFormat);
                 }
                 // .....
 
+            } catch (error) {
+                ErrorHandler.handle(error, 'GetDLCInfofromSteamDB.submitInput', ErrorHandler.types.UNKNOWN);
             }
-
-            // ..... SAVE LAST SELECTION
-            if (Storage.isChecked("globalSaveLastSelectionAndAutoSubmit")) {
-                Storage.set("globalSaveLastSelectionValue", selectedFormat);
-            }
-            // .....
-
         });
 
         // ..... AUTO SUBMIT
@@ -372,85 +830,113 @@ const GetDLCInfofromSteamDB = {
 
         // SUBMIT OPTIONS
         $(document).on("submit", "form#GetDLCInfofromSteamDB_submitOptions", (e) => {
+            try {
+                e.preventDefault();
 
-            e.preventDefault();
+                // EACH
+                $(e.currentTarget).find("input, select").each((_index, dom) => {
 
-            // EACH
-            $(e.currentTarget).find("input, select").each((_index, dom) => {
+                    const $this = $(dom);
+                    const name = $this.attr("name");
+                    const type = $this.attr("type");
+                    const value = type === "checkbox" ? $this.prop("checked") : $this.val();
 
-                const $this = $(dom);
-                const name = $this.attr("name");
-                const type = $this.attr("type");
-                const value = type === "checkbox" ? $this.prop("checked") : $this.val();
+                    // SET
+                    Storage.set(name, value);
 
-                // SET
-                Storage.set(name, value);
+                });
 
-            });
+                // SUCCESS NOTIFICATION
+                ErrorHandler.notify("Options saved successfully!", false);
 
-            // ALERT
-            window.alert("Options saved!");
-
+            } catch (error) {
+                ErrorHandler.handle(error, 'GetDLCInfofromSteamDB.submitOptions', ErrorHandler.types.STORAGE);
+            }
         });
 
         // RESET OPTIONS
         $(document).on("click", "#GetDLCInfofromSteamDB_resetOptions", (e) => {
+            try {
+                e.preventDefault();
 
-            e.preventDefault();
+                // CONFIRM
+                if (window.confirm("Do you really want to reset options?")) {
+                    // CLEAR
+                    const cleared = Storage.clear();
+                    if (cleared) {
+                        // LOAD OPTIONS
+                        this.loadOptions();
+                        // SUCCESS NOTIFICATION
+                        ErrorHandler.notify("Restored default options successfully!", false);
+                    }
+                }
 
-            // CONFIRM
-            if (window.confirm("Do you really want to reset options?")) {
-                // CLEAR
-                Storage.clear();
-                // LOAD OPTIONS
-                this.loadOptions();
-                // ALERT
-                window.alert("Restored default options!");
+            } catch (error) {
+                ErrorHandler.handle(error, 'GetDLCInfofromSteamDB.resetOptions', ErrorHandler.types.STORAGE);
             }
-
         });
 
         // STEAMDB - SHOW TABNAV
         $(document).on("click", ".GetDLCInfofromSteamDB_tabNav", (e) => {
+            try {
+                e.preventDefault();
 
-            e.preventDefault();
+                // SHOW
+                $(e.currentTarget).tab("show");
 
-            // SHOW
-            $(e.currentTarget).tab("show");
-
+            } catch (error) {
+                ErrorHandler.handle(error, 'GetDLCInfofromSteamDB.tabNav', ErrorHandler.types.DOM);
+            }
         });
 
         // EVENT MODAL
         const eventModalDom = new RModal(document.getElementById("GetDLCInfofromSteamDB_modal"));
 
         // SHOW
-        $(document).on("click", "#GetDLCInfofromSteamDB_openModal a.btn", (e) => {
+        $(document).on("click", "#GetDLCInfofromSteamDB_openModal a.btn", async (e) => {
+            try {
+                e.preventDefault();
 
-            e.preventDefault();
+                if (this.info.isSearchPage && $("#GetDLCInfofromSteamDB_alertSearchPage").length < 1) {
 
-            if (this.info.isSearchPage && $("#GetDLCInfofromSteamDB_alertSearchPage").length < 1) {
+                    $(`<div style="padding:10px;font-size:14px;text-align:center;background:#ff9800;color:white;margin-bottom:10px;border:0;cursor:auto;display:block" id="GetDLCInfofromSteamDB_alertSearchPage" class="btn">Please wait! Extracting data from all pages!</div>`).prependTo("#GetDLCInfofromSteamDB_openModal");
 
-                $(`<div style="padding:10px;font-size:14px;text-align:center;background:red;color:white;margin-bottom:10px;border:0;cursor:auto;display:block" id="GetDLCInfofromSteamDB_alertSearchPage" class="btn">Please wait! Extracting data from all pages!</div>`).prependTo("#GetDLCInfofromSteamDB_openModal");
+                    // Process all pages with async/await
+                    const processAllPages = async () => {
+                        try {
+                            while (true) {
+                                // Extract DLCs from current page
+                                await GetDLCInfofromSteamDB.getDataDLCS();
 
-                const interval = window.setInterval(() => {
+                                // Check for next page button
+                                const btnNext = $("#table-sortable_next");
+                                if (!btnNext.length || btnNext.hasClass("disabled")) {
+                                    break;
+                                }
 
-                    GetDLCInfofromSteamDB.getDataDLCS();
+                                // Click next and wait for page load
+                                btnNext.click();
+                                await new Promise(resolve => setTimeout(resolve, 1000));
+                            }
 
-                    const btnNext = $("#table-sortable_next");
-                    if (btnNext.hasClass("disabled")) {
-                        $("#GetDLCInfofromSteamDB_alertSearchPage").hide();
-                        window.clearInterval(interval);
-                        eventModalDom.open();
-                    } else {
-                        btnNext.click();
-                    }
+                            $("#GetDLCInfofromSteamDB_alertSearchPage").hide();
+                            eventModalDom.open();
+                            ErrorHandler.notify(`Successfully loaded ${GetDLCInfofromSteamDB.steamDB.appIDDLCsCount} DLCs from all pages`, false);
+                        } catch (error) {
+                            $("#GetDLCInfofromSteamDB_alertSearchPage").hide();
+                            ErrorHandler.handle(error, 'GetDLCInfofromSteamDB.processAllPages', ErrorHandler.types.UNKNOWN);
+                        }
+                    };
 
-                }, 500);
+                    processAllPages();
 
-            } else {
-                eventModalDom.open();
+                } else {
+                    eventModalDom.open();
+                }
+
+            } catch (error) {
+                ErrorHandler.handle(error, 'GetDLCInfofromSteamDB.openModal', ErrorHandler.types.UNKNOWN);
             }
-
         });
 
         // HIDE

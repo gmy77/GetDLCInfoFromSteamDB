@@ -4,7 +4,7 @@
 // @description      Get DLC Info from SteamDB
 // @author           Sak32009
 // @contributor      cs.rin.ru
-// @version          3.6.8
+// @version          3.7.0
 // @license          MIT
 // @homepageURL      https://github.com/Sak32009/GetDLCInfoFromSteamDB/
 // @supportURL       http://cs.rin.ru/forum/viewtopic.php?f=10&t=71837
@@ -14,9 +14,9 @@
 // @icon64           https://raw.githubusercontent.com/Sak32009/GetDLCInfoFromSteamDB/master/sak32009-get-dlc-info-from-steamdb-64.png
 // @match            *://steamdb.info/app/*
 // @match            *://steamdb.info/search/*
-// @require          https://cdnjs.cloudflare.com/ajax/libs/jquery/3.3.1/jquery.min.js
+// @require          https://cdnjs.cloudflare.com/ajax/libs/jquery/3.7.1/jquery.min.js
 // @require          https://raw.githubusercontent.com/zewish/rmodal.js/master/dist/rmodal.min.js
-// @require          https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/1.3.8/FileSaver.min.js
+// @require          https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js
 // @require          https://steamdb.info/static/js/tabbable.4f8f7fce.js
 // @grant            GM.xmlHttpRequest
 // @grant            GM_xmlhttpRequest
