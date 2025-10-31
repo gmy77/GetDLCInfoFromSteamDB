@@ -8,19 +8,21 @@
 
 1. Install a userscript manager:
 
-- **[Tampermonkey](https://tampermonkey.net)** _(CLOSED SOURCE)_
-- **[Violentmonkey](https://violentmonkey.github.io)** _(OPEN SOURCE)_
+   - **[Tampermonkey](https://tampermonkey.net)** _(CLOSED SOURCE)_
+   - **[Violentmonkey](https://violentmonkey.github.io)** _(OPEN SOURCE)_
 
-1. Install **[Get Data from Steam / SteamDB](dist/sak32009-get-data-from-steam-steamdb.user.js?raw=true)** userscript.
+2. Install **[Get Data from Steam / SteamDB](dist/sak32009-get-data-from-steam-steamdb.user.js?raw=true)** userscript.
 
-2. Visit [store.steampowered.com](https://store.steampowered.com/app/218620) or [steamdb.info](https://steamdb.info/app/218620)
-and look for the button at the bottom right!
+3. Visit [store.steampowered.com](https://store.steampowered.com/app/218620) or [steamdb.info](https://steamdb.info/app/218620)
+   and look for the floating toolkit in the bottom-right corner.
 
-### Modernized experience (2024 refresh)
+### 2024 overhaul
 
-- Lightweight vanilla JavaScript implementation that uses the modern Fetch API and `AbortController` for responsive data refreshes.
-- Floating control panel with quick actions to copy DLC/package lists, download JSON payloads, or refresh data on demand.
-- Automatic caching per session to reduce repeated API calls and a compact JSON schema that highlights core metadata.
+- Fully rewritten userscript with no third-party runtime dependencies.
+- Modern floating panel that summarises price, platform, DLC, depot and achievement data.
+- SteamDB DOM scraper with debounced observers to pick up DLC, achievements and depot tables as they load.
+- One-click exports for cream_api.ini, achievement watcher files, depot CSV and raw store JSON.
+- Clipboard and download helpers that avoid blocking alerts and handle browsers without async clipboard support.
 
 ## Updating
 

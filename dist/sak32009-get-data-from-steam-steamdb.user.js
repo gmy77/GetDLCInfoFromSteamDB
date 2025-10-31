@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         Get Data from Steam / SteamDB
-// @namespace    modernized-get-data-from-steam
-// @version      2024.07.01
-// @author       Modernized by OpenAI Assistant
-// @description  Collect DLC, package, and pricing information from Steam and SteamDB using modern browser APIs.
+// @namespace    sak32009-get-data-modern
+// @version      2024.10.31
+// @author       Sak32009 & contributors
+// @description  Collect DLC, depot and achievement metadata from Steam / SteamDB with modern, dependency-free utilities.
 // @license      MIT
 // @icon         https://steamdb.info/static/logos/192px.png
 // @homepage     https://github.com/Sak32009/GetDataFromSteam-SteamDB
@@ -19,110 +19,123 @@
 // @grant        none
 // @run-at       document-end
 // @noframes
-// @updatedAt    Mon, 01 Jul 2024 12:00:00 GMT
+// @updatedAt    Thu, 31 Oct 2024 12:00:00 GMT
 // ==/UserScript==
 
 (() => {
   "use strict";
 
   /**
-   * Application level constants used across the script.
+   * Regular expressions & selectors used across the script.
    */
   const APP_PAGE_REGEX = /\/app\/(\d+)/u;
   const STEAM_STORE_API = "https://store.steampowered.com/api/appdetails";
-  const PANEL_ID = "steam-data-toolkit";
-  const PANEL_OPEN_KEY = "steam-data-toolkit:is-open";
-  const PANEL_ANCHOR = "steam-data-toolkit-anchor";
+  const PANEL_ID = "gds-panel";
+  const PANEL_STORAGE_KEY = "gds-panel:visible";
+  const STEAMDB_HOST = "steamdb.info";
 
   /**
-   * Basic utility helpers that keep the main workflow clean and readable.
+   * Namespace that hosts small utility helpers. Keeping the helpers close to the
+   * script reduces the need for large dependencies while keeping the logic tidy.
    */
   const utils = {
     /**
-     * Safe wrapper around sessionStorage to avoid quota errors in private browsing.
-     * @param {string} key
-     * @returns {string | null}
-     */
-    getSessionValue(key) {
-      try {
-        return window.sessionStorage.getItem(key);
-      } catch (error) {
-        console.warn("[Steam Data Toolkit] Unable to read sessionStorage", error);
-        return null;
-      }
-    },
-
-    /**
-     * Persists a value inside sessionStorage while gracefully handling edge cases.
-     * @param {string} key
-     * @param {string} value
-     */
-    setSessionValue(key, value) {
-      try {
-        window.sessionStorage.setItem(key, value);
-      } catch (error) {
-        console.warn("[Steam Data Toolkit] Unable to write sessionStorage", error);
-      }
-    },
-
-    /**
-     * Creates an HTML element with optional properties in a declarative way.
+     * Creates a DOM element and extends it with the provided options.
+     * This is a tiny helper that keeps templating declarative.
+     *
      * @template {keyof HTMLElementTagNameMap} T
-     * @param {T} tagName
-     * @param {Partial<HTMLElementTagNameMap[T]>} options
+     * @param {T} tag
+     * @param {Partial<HTMLElementTagNameMap[T]> & Record<string, unknown>} [options]
      * @returns {HTMLElementTagNameMap[T]}
      */
-    createElement(tagName, options = {}) {
-      const element = document.createElement(tagName);
+    createElement(tag, options = {}) {
+      const element = document.createElement(tag);
       Object.assign(element, options);
       return element;
     },
 
     /**
-     * Formats dates using the browser's locale-aware formatter.
-     * @param {string | undefined} rawDate
+     * Converts arbitrary values to trimmed text while avoiding null/undefined.
+     * @param {unknown} value
      * @returns {string}
      */
-    formatDate(rawDate) {
-      if (!rawDate) {
+    text(value) {
+      if (value === null || value === undefined) {
+        return "";
+      }
+      return String(value).trim();
+    },
+
+    /**
+     * Debounces a function so it only runs once after the cooldown period. This
+     * is used for DOM observers to avoid spamming re-renders while SteamDB still
+     * streams HTML into the page.
+     *
+     * @template {(...args: never[]) => void} T
+     * @param {T} callback
+     * @param {number} delay
+     * @returns {T}
+     */
+    debounce(callback, delay = 150) {
+      let timer = null;
+      return ((...args) => {
+        if (timer) {
+          window.clearTimeout(timer);
+        }
+        timer = window.setTimeout(() => {
+          timer = null;
+          callback(...args);
+        }, delay);
+      });
+    },
+
+    /**
+     * Formats dates by using Intl.DateTimeFormat. Keeps locale awareness while
+     * falling back to ISO strings when the input cannot be parsed.
+     *
+     * @param {string | undefined} value
+     * @returns {string}
+     */
+    formatDate(value) {
+      if (!value) {
         return "Unknown";
       }
-      const date = new Date(rawDate);
+      const date = new Date(value);
       if (Number.isNaN(date.getTime())) {
-        return rawDate;
+        return value;
       }
       return new Intl.DateTimeFormat(undefined, {
         dateStyle: "medium",
+        timeStyle: "short",
       }).format(date);
     },
 
     /**
-     * Formats currency values using the user's locale. If the price object is missing,
-     * a fallback message is returned instead of throwing an exception.
-     * @param {{ final_formatted?: string }} priceOverview
+     * Formats price using the currency information exposed by the Steam API.
+     * @param {{ final_formatted?: string } | undefined} price
      * @returns {string}
      */
-    formatPrice(priceOverview) {
-      if (!priceOverview) {
+    formatPrice(price) {
+      if (!price) {
         return "Unavailable";
       }
-      if (priceOverview.final_formatted) {
-        return priceOverview.final_formatted;
+      if (price.final_formatted) {
+        return price.final_formatted;
       }
       return "Unavailable";
     },
 
     /**
-     * Attempts to copy text to the clipboard using the asynchronous Clipboard API,
-     * falling back to the classic textarea trick if necessary.
+     * Copy helper that prefers the asynchronous clipboard API and gracefully
+     * falls back to a hidden textarea when the API is blocked.
+     *
      * @param {string} value
      */
-    async copyToClipboard(value) {
+    async copy(value) {
       try {
         await navigator.clipboard.writeText(value);
-        alert("Copied to clipboard ✔");
+        utils.toast("Copied to clipboard");
       } catch (error) {
-        console.warn("[Steam Data Toolkit] Clipboard API failed, using fallback", error);
         const textarea = utils.createElement("textarea", {
           value,
         });
@@ -133,17 +146,17 @@
         textarea.select();
         document.execCommand("copy");
         textarea.remove();
-        alert("Copied to clipboard ✔");
+        utils.toast("Copied to clipboard");
       }
     },
 
     /**
-     * Builds a downloadable blob so that the user can persist the collected data locally.
+     * Triggers a file download by creating an Object URL.
      * @param {string} filename
      * @param {string} contents
      */
-    triggerDownload(filename, contents) {
-      const blob = new Blob([contents], { type: "application/json" });
+    download(filename, contents) {
+      const blob = new Blob([contents], { type: "text/plain;charset=utf-8" });
       const url = URL.createObjectURL(blob);
       const anchor = utils.createElement("a", {
         href: url,
@@ -156,28 +169,72 @@
     },
 
     /**
-     * Utility that clamps an array to avoid overwhelming the UI when an app ships
-     * with hundreds of DLC items.
-     * @template T
-     * @param {T[]} list
-     * @param {number} maxEntries
-     * @returns {T[]}
+     * Shows a non-blocking message in the top-right corner so we avoid native
+     * alerts that interrupt the browsing session.
+     *
+     * @param {string} message
      */
-    clamp(list, maxEntries = 200) {
-      if (!Array.isArray(list)) {
-        return [];
+    toast(message) {
+      const existing = document.getElementById("gds-toast");
+      if (existing) {
+        existing.remove();
       }
-      if (list.length <= maxEntries) {
-        return list;
+      const toast = utils.createElement("div", {
+        id: "gds-toast",
+        textContent: message,
+      });
+      toast.style.position = "fixed";
+      toast.style.top = "1.5rem";
+      toast.style.right = "1.5rem";
+      toast.style.padding = "0.6rem 0.9rem";
+      toast.style.background = "rgba(19, 24, 34, 0.9)";
+      toast.style.color = "#f5f7fa";
+      toast.style.borderRadius = "999px";
+      toast.style.fontSize = "0.85rem";
+      toast.style.zIndex = "2147483647";
+      toast.style.boxShadow = "0 10px 25px rgba(10, 13, 22, 0.35)";
+      toast.style.transition = "opacity 0.4s ease";
+      document.body.append(toast);
+      window.setTimeout(() => {
+        toast.style.opacity = "0";
+        window.setTimeout(() => toast.remove(), 400);
+      }, 1500);
+    },
+
+    /**
+     * Persists panel visibility in sessionStorage, ignoring quota issues.
+     * @param {boolean} value
+     */
+    setPanelVisibility(value) {
+      try {
+        window.sessionStorage.setItem(PANEL_STORAGE_KEY, JSON.stringify(value));
+      } catch (error) {
+        console.warn("[GDS] Unable to persist panel visibility", error);
       }
-      console.warn(`Truncating list to ${maxEntries} entries for readability.`);
-      return list.slice(0, maxEntries);
+    },
+
+    /**
+     * Reads the stored panel visibility preference.
+     * @returns {boolean}
+     */
+    getPanelVisibility() {
+      try {
+        const stored = window.sessionStorage.getItem(PANEL_STORAGE_KEY);
+        if (stored === null) {
+          return true;
+        }
+        return JSON.parse(stored);
+      } catch (error) {
+        console.warn("[GDS] Unable to read panel visibility", error);
+        return true;
+      }
     },
   };
 
   /**
-   * Responsible for retrieving raw app data from the Steam Storefront API.
-   * Uses AbortController so users can refresh requests without waiting for timeouts.
+   * Lightweight cache-aware client for the public Steam Store API. The API is
+   * extremely chatty, therefore we store responses in sessionStorage so the
+   * panel can be reopened without hitting the network again.
    */
   class AppDataClient {
     constructor() {
@@ -186,21 +243,17 @@
     }
 
     /**
-     * Fetches metadata for a given app id.
+     * Fetches and normalizes app data.
      * @param {string} appId
      * @param {boolean} [forceRefresh=false]
      * @returns {Promise<AppPayload>}
      */
-    async fetchApp(appId, forceRefresh = false) {
-      const cacheKey = `steam-app:${appId}`;
+    async fetch(appId, forceRefresh = false) {
+      const cacheKey = `gds:store:${appId}`;
       if (!forceRefresh) {
-        const cached = utils.getSessionValue(cacheKey);
+        const cached = this.readCache(cacheKey);
         if (cached) {
-          try {
-            return JSON.parse(cached);
-          } catch (error) {
-            console.warn("[Steam Data Toolkit] Unable to parse cache", error);
-          }
+          return cached;
         }
       }
 
@@ -213,14 +266,14 @@
       url.searchParams.set("appids", appId);
       url.searchParams.set("cc", "us");
       url.searchParams.set("l", "english");
-      url.searchParams.set("filters", "basic,package_groups,price_overview,platforms,release_date,developers,publishers,dlc");
+      url.searchParams.set("filters", "basic,price_overview,package_groups,platforms,release_date,developers,publishers,dlc");
 
       const response = await fetch(url.toString(), {
         method: "GET",
-        credentials: "omit",
         signal: this.controller.signal,
+        credentials: "omit",
         headers: {
-          "Accept": "application/json",
+          Accept: "application/json",
         },
       });
 
@@ -230,19 +283,49 @@
 
       /** @type {Record<string, SteamApiResponse>} */
       const payload = await response.json();
-      const appResponse = payload?.[appId];
-
-      if (!appResponse?.success) {
-        throw new Error("Steam Store API returned an unsuccessful response");
+      const entry = payload?.[appId];
+      if (!entry?.success) {
+        throw new Error("Steam Store API returned an empty response");
       }
 
-      const normalized = AppDataClient.normalize(appId, appResponse.data);
-      utils.setSessionValue(cacheKey, JSON.stringify(normalized));
+      const normalized = AppDataClient.normalize(appId, entry.data);
+      this.writeCache(cacheKey, normalized);
       return normalized;
     }
 
     /**
-     * Normalizes the verbose Steam API payload into a smaller, easier to consume structure.
+     * Reads JSON from the cache.
+     * @param {string} key
+     * @returns {AppPayload | null}
+     */
+    readCache(key) {
+      try {
+        const raw = window.sessionStorage.getItem(key);
+        if (!raw) {
+          return null;
+        }
+        return JSON.parse(raw);
+      } catch (error) {
+        console.warn("[GDS] Failed to read cache", error);
+        return null;
+      }
+    }
+
+    /**
+     * Writes JSON to the cache.
+     * @param {string} key
+     * @param {AppPayload} value
+     */
+    writeCache(key, value) {
+      try {
+        window.sessionStorage.setItem(key, JSON.stringify(value));
+      } catch (error) {
+        console.warn("[GDS] Failed to write cache", error);
+      }
+    }
+
+    /**
+     * Normalizes the verbose store payload into a leaner structure.
      * @param {string} appId
      * @param {SteamApiResponse["data"]} data
      * @returns {AppPayload}
@@ -255,20 +338,20 @@
         price_overview: priceOverview,
         developers = [],
         publishers = [],
-        dlc = [],
         package_groups: packageGroups = [],
         platforms = {},
+        dlc = [],
       } = data ?? {};
 
-      const normalizedPackages = packageGroups.flatMap((group) => {
+      const packages = packageGroups.flatMap((group) => {
         if (!group?.subs) {
           return [];
         }
-        return group.subs.map((sub) => ({
-          id: sub.packageid,
-          title: sub.title,
-          price: sub.price_in_cents_with_discount / 100,
-          discount: sub.discount_pct,
+        return group.subs.map((entry) => ({
+          id: String(entry.packageid),
+          title: entry.title,
+          price: entry.price_in_cents_with_discount / 100,
+          discount: entry.discount_pct,
         }));
       });
 
@@ -277,497 +360,760 @@
         name,
         type,
         releaseDate: releaseDate?.date,
-        isReleased: Boolean(releaseDate?.coming_soon === false),
+        isReleased: releaseDate?.coming_soon === false,
         developers,
         publishers,
         priceOverview,
         platforms,
-        dlc,
-        packages: normalizedPackages,
+        dlc: dlc?.map(String) ?? [],
+        packages,
         fetchedAt: new Date().toISOString(),
       };
     }
   }
 
   /**
-   * Manages rendering the floating panel and keeping it in sync with fetched data.
+   * SteamDB exposes a very rich HTML view with DLC, achievements and depots.
+   * The scraper translates the DOM into structured data without relying on
+   * undocumented XHR calls. The logic is heavily guarded and fails softly in
+   * case the markup changes.
    */
-  class PanelController {
-    constructor() {
-      this.root = null;
+  class SteamDbScraper {
+    /**
+     * Collects DLC entries from the current page.
+     * @returns {Array<SteamDbDlcEntry>}
+     */
+    static collectDlc() {
+      const rows = /** @type {NodeListOf<HTMLTableRowElement>} */ (
+        document.querySelectorAll("#dlc table tbody tr")
+      );
+      const items = [];
+      rows.forEach((row) => {
+        const cells = row.querySelectorAll("td");
+        if (cells.length === 0) {
+          return;
+        }
+        const id = row.getAttribute("data-appid") ?? utils.text(cells[0]?.textContent);
+        if (!id) {
+          return;
+        }
+        const nameCell = cells[1] ?? cells[0];
+        const nameLink = nameCell?.querySelector("a");
+        const name = utils.text(nameLink?.textContent || nameCell?.textContent);
+        items.push({
+          id: id.trim(),
+          name: name || `DLC ${id.trim()}`,
+        });
+      });
+      return SteamDbScraper.deduplicate(items, (item) => item.id);
     }
 
     /**
-     * Ensures the panel is inserted into the DOM. Subsequent calls simply return the root element.
+     * Collects achievement metadata from the SteamDB achievements table.
+     * @returns {Array<SteamDbAchievementEntry>}
+     */
+    static collectAchievements() {
+      const rows = /** @type {NodeListOf<HTMLTableRowElement>} */ (
+        document.querySelectorAll("#achievements table tbody tr")
+      );
+      const items = [];
+      rows.forEach((row) => {
+        const apiName = row.getAttribute("data-name") ?? utils.text(row.querySelector("td:nth-child(2)")?.textContent);
+        if (!apiName) {
+          return;
+        }
+        const displayName = utils.text(row.querySelector("td:nth-child(3)")?.textContent);
+        const description = utils.text(row.querySelector("td:nth-child(4)")?.textContent);
+        const icon = row.querySelector("img");
+        items.push({
+          name: apiName,
+          displayName: displayName || apiName,
+          description,
+          icon: icon?.getAttribute("src") ?? "",
+          iconGray: icon?.getAttribute("data-hover-src") ?? "",
+        });
+      });
+      return SteamDbScraper.deduplicate(items, (item) => item.name);
+    }
+
+    /**
+     * Collects depot metadata such as depot id, name and OS flags.
+     * @returns {Array<SteamDbDepotEntry>}
+     */
+    static collectDepots() {
+      const rows = /** @type {NodeListOf<HTMLTableRowElement>} */ (
+        document.querySelectorAll("#depots table tbody tr")
+      );
+      const items = [];
+      rows.forEach((row) => {
+        const cells = row.querySelectorAll("td");
+        if (cells.length === 0) {
+          return;
+        }
+        const id = row.getAttribute("data-depotid") ?? utils.text(cells[0]?.textContent);
+        if (!id) {
+          return;
+        }
+        const nameCell = cells[1] ?? cells[0];
+        const name = utils.text(nameCell?.textContent) || `Depot ${id.trim()}`;
+        const manifests = utils.text(cells[2]?.textContent);
+        const osList = utils.text(row.getAttribute("data-os"));
+        items.push({
+          id: id.trim(),
+          name,
+          manifests,
+          osList,
+        });
+      });
+      return SteamDbScraper.deduplicate(items, (item) => item.id);
+    }
+
+    /**
+     * Helper that removes duplicates while keeping the first occurrence.
+     *
+     * @template T
+     * @param {T[]} list
+     * @param {(entry: T) => string} resolver
+     * @returns {T[]}
+     */
+    static deduplicate(list, resolver) {
+      const seen = new Set();
+      const result = [];
+      list.forEach((entry) => {
+        const key = resolver(entry);
+        if (!key || seen.has(key)) {
+          return;
+        }
+        seen.add(key);
+        result.push(entry);
+      });
+      return result;
+    }
+  }
+
+  /**
+   * Export helpers for formats that the original project popularized. These
+   * exports are intentionally simple and can be extended by advanced users.
+   */
+  const exporters = {
+    /**
+     * Creates a tiny cream_api.ini configuration with the DLC list.
+     * @param {string} appId
+     * @param {Array<SteamDbDlcEntry | string>} dlcEntries
+     */
+    creamApi(appId, dlcEntries) {
+      const body = Array.from(dlcEntries)
+        .map((item, index) => {
+          const id = typeof item === "string" ? item : item.id;
+          const name = typeof item === "string" ? `DLC ${item}` : item.name;
+          return `dlc${index + 1} = ${id} ; ${name}`;
+        })
+        .join("\n");
+      return `; cream_api autogenerated by Get Data from Steam / SteamDB\n[steam]\nappid = ${appId}\n\n[dlc]\n${body}`;
+    },
+
+    /**
+     * Builds an achievements ini compatible with Achievement Watcher.
+     * @param {Array<SteamDbAchievementEntry>} achievements
+     */
+    achievementsIni(achievements) {
+      const header = "[Achievements]";
+      const lines = achievements.map((item) => `${item.name}=1`);
+      return `${header}\n${lines.join("\n")}`;
+    },
+
+    /**
+     * Converts achievements into a JSON payload.
+     * @param {Array<SteamDbAchievementEntry>} achievements
+     */
+    achievementsJson(achievements) {
+      return JSON.stringify(
+        achievements.map((item) => ({
+          name: item.name,
+          displayName: item.displayName,
+          description: item.description,
+          icon: item.icon,
+          iconGray: item.iconGray,
+        })),
+        null,
+        2,
+      );
+    },
+
+    /**
+     * Provides a CSV compatible view of depots to simplify spreadsheet imports.
+     * @param {Array<SteamDbDepotEntry>} depots
+     */
+    depotsCsv(depots) {
+      const header = "depot_id,name,manifests,os_list";
+      const rows = depots.map((depot) =>
+        [depot.id, depot.name, depot.manifests, depot.osList]
+          .map((value) => `"${value.replace(/"/g, '""')}"`)
+          .join(","),
+      );
+      return [header, ...rows].join("\n");
+    },
+  };
+
+  /**
+   * The panel controller is responsible for rendering the floating UI. It keeps
+   * the markup extremely small while remaining accessible and keyboard friendly.
+   */
+  class PanelController {
+    constructor() {
+      /** @type {HTMLDivElement} */
+      this.root = this.ensureRoot();
+    }
+
+    /**
+     * Ensures the floating panel exists once.
      * @returns {HTMLDivElement}
      */
     ensureRoot() {
-      if (this.root) {
-        return this.root;
-      }
-
       const existing = document.getElementById(PANEL_ID);
       if (existing) {
-        this.root = existing;
-        return existing;
+        return /** @type {HTMLDivElement} */ (existing);
       }
 
       this.injectStyles();
 
-      const anchor = utils.createElement("div", { id: PANEL_ANCHOR });
-      document.body.append(anchor);
-
-      const panel = utils.createElement("div", {
+      const container = utils.createElement("div", {
         id: PANEL_ID,
       });
-      anchor.append(panel);
-      this.root = panel;
-      return panel;
+      container.setAttribute("role", "region");
+      container.setAttribute("aria-label", "Get Data from Steam / SteamDB");
+
+      document.body.append(container);
+      return container;
     }
 
     /**
-     * Injects component specific styles using a modern CSS reset and design tokens for easy customization.
+     * Appends the CSS only once. The palette intentionally supports both light
+     * and dark pages by using semi transparent overlays.
      */
     injectStyles() {
       if (document.getElementById(`${PANEL_ID}-styles`)) {
         return;
       }
-
       const style = utils.createElement("style", {
         id: `${PANEL_ID}-styles`,
         textContent: `
           :root {
-            color-scheme: dark light;
-          }
-
-          #${PANEL_ANCHOR} {
-            position: fixed;
-            inset-block-end: 1.5rem;
-            inset-inline-end: 1.5rem;
-            z-index: 2147483647;
+            color-scheme: light dark;
           }
 
           #${PANEL_ID} {
-            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-            background: color-mix(in srgb, #10131a 80%, transparent);
-            border-radius: 12px;
-            border: 1px solid color-mix(in srgb, #5a6b8a 50%, transparent);
-            box-shadow: 0 20px 45px rgba(12, 13, 18, 0.45);
-            padding: 1.2rem;
-            width: min(380px, calc(100vw - 2rem));
-            color: #f7f9fc;
+            position: fixed;
+            inset-block-end: 1.5rem;
+            inset-inline-end: 1.5rem;
+            width: min(420px, calc(100vw - 2rem));
+            padding: 1.25rem;
+            border-radius: 16px;
+            background: rgba(19, 26, 36, 0.88);
+            color: #f5f7fa;
+            font-family: "Inter", "Segoe UI", system-ui, sans-serif;
+            box-shadow: 0 24px 60px rgba(5, 8, 12, 0.55);
             backdrop-filter: blur(18px);
-            transition: transform 0.35s ease, opacity 0.35s ease;
-            transform-origin: bottom right;
+            z-index: 2147483647;
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+            transition: transform 0.3s ease, opacity 0.3s ease;
           }
 
           #${PANEL_ID}[data-hidden="true"] {
             opacity: 0.1;
-            transform: scale(0.92);
+            transform: translateY(12px);
             pointer-events: none;
+          }
+
+          #${PANEL_ID} button {
+            appearance: none;
+            border: none;
+            cursor: pointer;
+            border-radius: 10px;
+            padding: 0.45rem 0.75rem;
+            background: linear-gradient(120deg, #6a5acd, #4fb8ff);
+            color: white;
+            font-weight: 600;
+            font-size: 0.8rem;
+            transition: opacity 0.2s ease;
+          }
+
+          #${PANEL_ID} button[disabled] {
+            opacity: 0.45;
+            cursor: not-allowed;
+          }
+
+          #${PANEL_ID} button.secondary {
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
           }
 
           #${PANEL_ID} header {
             display: flex;
             justify-content: space-between;
-            gap: 0.6rem;
             align-items: center;
-            margin-bottom: 0.9rem;
+            gap: 1rem;
           }
 
           #${PANEL_ID} header h2 {
+            font-size: 1.1rem;
             margin: 0;
-            font-size: 1.05rem;
-            font-weight: 600;
-            letter-spacing: 0.01em;
           }
 
-          #${PANEL_ID} header button {
-            appearance: none;
-            border: 0;
-            background: color-mix(in srgb, #0084ff 65%, #001a33 35%);
-            color: white;
-            padding: 0.35rem 0.65rem;
-            border-radius: 8px;
+          #${PANEL_ID} dl {
+            display: grid;
+            grid-template-columns: auto 1fr;
+            gap: 0.35rem 0.75rem;
+            margin: 0;
+          }
+
+          #${PANEL_ID} dl dt {
+            opacity: 0.6;
+            font-size: 0.75rem;
+          }
+
+          #${PANEL_ID} dl dd {
+            margin: 0;
+            font-size: 0.85rem;
+            letter-spacing: 0.02em;
+          }
+
+          #${PANEL_ID} details {
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 12px;
+            padding: 0.75rem 0.85rem;
+          }
+
+          #${PANEL_ID} details summary {
             cursor: pointer;
-            font-size: 0.8rem;
-            transition: background 0.2s ease;
-          }
-
-          #${PANEL_ID} header button:hover {
-            background: color-mix(in srgb, #4ca2ff 80%, #001a33 20%);
-          }
-
-          #${PANEL_ID} section {
-            margin-block: 0.75rem;
-          }
-
-          #${PANEL_ID} section h3 {
-            margin: 0 0 0.35rem;
-            font-size: 0.9rem;
-            opacity: 0.8;
+            font-weight: 600;
+            outline: none;
           }
 
           #${PANEL_ID} ul {
             list-style: none;
-            margin: 0;
+            margin: 0.75rem 0 0;
             padding: 0;
-            display: grid;
-            gap: 0.4rem;
-            max-height: 240px;
+            max-height: 220px;
             overflow-y: auto;
+            display: grid;
+            gap: 0.35rem;
           }
 
           #${PANEL_ID} li {
-            background: color-mix(in srgb, #1a2333 70%, transparent);
-            padding: 0.5rem 0.6rem;
-            border-radius: 8px;
-            display: flex;
-            flex-direction: column;
-            gap: 0.15rem;
-          }
-
-          #${PANEL_ID} li span:first-child {
-            font-weight: 600;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 10px;
+            padding: 0.55rem 0.6rem;
+            font-size: 0.82rem;
+            line-height: 1.4;
           }
 
           #${PANEL_ID} footer {
             display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
             gap: 0.5rem;
-            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-            margin-top: 0.75rem;
           }
 
-          #${PANEL_ID} footer button {
-            appearance: none;
-            border: 0;
-            padding: 0.45rem 0.6rem;
-            border-radius: 8px;
-            background: color-mix(in srgb, #00c985 65%, #002619 35%);
-            color: white;
-            cursor: pointer;
+          #${PANEL_ID} .gds-meta {
             font-size: 0.8rem;
-            transition: background 0.2s ease;
+            opacity: 0.75;
           }
 
-          #${PANEL_ID} footer button:hover {
-            background: color-mix(in srgb, #2bdc9b 80%, #002619 20%);
+          #${PANEL_ID} .gds-error {
+            background: rgba(255, 82, 82, 0.2);
+            border: 1px solid rgba(255, 138, 128, 0.4);
+            border-radius: 12px;
+            padding: 0.75rem;
+            font-size: 0.85rem;
           }
 
-          #${PANEL_ID} .steam-data-meta {
+          #${PANEL_ID} .gds-grid {
             display: grid;
-            gap: 0.2rem;
-            font-size: 0.85rem;
-          }
-
-          #${PANEL_ID} .steam-data-meta strong {
-            font-weight: 600;
-          }
-
-          #${PANEL_ID} .steam-data-error {
-            color: #ff8f9c;
-            font-size: 0.85rem;
+            gap: 0.35rem;
           }
         `,
       });
-
       document.head.append(style);
     }
 
     /**
-     * Renders the current state of the data inside the floating panel.
-     * @param {AppPayload | null} payload
+     * Renders the entire panel state.
      * @param {PanelState} state
      */
-    render(payload, state) {
-      const root = this.ensureRoot();
+    render(state) {
+      this.root.replaceChildren();
 
       if (state.hidden) {
-        root.dataset.hidden = "true";
+        this.root.dataset.hidden = "true";
       } else {
-        delete root.dataset.hidden;
+        delete this.root.dataset.hidden;
       }
 
       const header = utils.createElement("header");
       const title = utils.createElement("h2", {
-        textContent: payload ? `${payload.name} · ${payload.appId}` : "Steam Data Toolkit",
+        textContent: state.store?.name ? `${state.store.name} · ${state.appId}` : `App ${state.appId}`,
       });
+      header.append(title);
 
-      const toggleButton = utils.createElement("button", {
+      const toggle = utils.createElement("button", {
         type: "button",
-        textContent: state.hidden ? "Show" : "Hide",
-        title: "Toggle panel visibility",
+        textContent: state.hidden ? "Show panel" : "Hide panel",
+        className: "secondary",
       });
-      toggleButton.addEventListener("click", () => {
+      toggle.addEventListener("click", () => {
         const nextHidden = !state.hidden;
         state.hidden = nextHidden;
-        utils.setSessionValue(PANEL_OPEN_KEY, JSON.stringify(!nextHidden));
-        this.render(payload, state);
+        utils.setPanelVisibility(!nextHidden);
+        this.render(state);
       });
-      header.append(title, toggleButton);
-
-      root.replaceChildren(header);
+      header.append(toggle);
+      this.root.append(header);
 
       if (state.error) {
-        const errorParagraph = utils.createElement("p", {
-          className: "steam-data-error",
+        const errorBox = utils.createElement("div", {
+          className: "gds-error",
           textContent: state.error,
         });
-        root.append(errorParagraph);
+        this.root.append(errorBox);
         return;
       }
 
-      if (!payload) {
-        const emptyState = utils.createElement("p", {
-          className: "steam-data-meta",
-          textContent: "Waiting for Steam app information…",
+      if (state.loading) {
+        const loading = utils.createElement("p", {
+          className: "gds-meta",
+          textContent: "Collecting Steam data…",
         });
-        root.append(emptyState);
-        return;
+        this.root.append(loading);
       }
 
-      const metaSection = utils.createElement("section");
-      metaSection.append(
-        createMetaLine("App Type", payload.type ?? "Unknown"),
-        createMetaLine("Release", `${utils.formatDate(payload.releaseDate)}${payload.isReleased ? "" : " (Coming Soon)"}`),
-        createMetaLine("Platforms", formatPlatforms(payload.platforms)),
-        createMetaLine("Price", utils.formatPrice(payload.priceOverview)),
-        createMetaLine("Developers", payload.developers?.join(", ") || "Unknown"),
-        createMetaLine("Publishers", payload.publishers?.join(", ") || "Unknown"),
-        createMetaLine("Fetched", utils.formatDate(payload.fetchedAt)),
-      );
-      root.append(metaSection);
-
-      if (payload.dlc?.length) {
-        root.append(this.createListSection("Downloadable Content", payload.dlc.map((id) => ({
-          id,
-          label: `DLC ID: ${id}`,
-        }))));
+      if (state.store) {
+        this.root.append(this.renderOverview(state));
       }
 
-      if (payload.packages?.length) {
-        const packageEntries = payload.packages.map((pkg) => ({
-          id: pkg.id,
-          label: pkg.title ?? `Package ${pkg.id}`,
-          price: pkg.price,
-          discount: pkg.discount,
-        }));
-        root.append(this.createListSection("Packages", packageEntries));
+      if (state.dlc.length) {
+        this.root.append(this.renderDlcSection(state));
       }
 
-      const footer = utils.createElement("footer");
-      const jsonButton = utils.createElement("button", {
-        type: "button",
-        textContent: "Copy JSON",
+      if (state.achievements.length) {
+        this.root.append(this.renderAchievementsSection(state));
+      }
+
+      if (state.depots.length) {
+        this.root.append(this.renderDepotsSection(state));
+      }
+
+      const footer = this.renderFooter(state);
+      this.root.append(footer);
+    }
+
+    /**
+     * Overview summarizing store metadata.
+     * @param {PanelState} state
+     */
+    renderOverview(state) {
+      const details = utils.createElement("details", { open: true });
+      details.append(utils.createElement("summary", { textContent: "Overview" }));
+      const dl = utils.createElement("dl");
+      const { store } = state;
+      if (!store) {
+        return details;
+      }
+      const entries = [
+        ["App Type", store.type ?? "Unknown"],
+        ["Release", `${utils.formatDate(store.releaseDate)}${store.isReleased ? "" : " (Coming soon)"}`],
+        ["Price", utils.formatPrice(store.priceOverview)],
+        ["Developers", store.developers?.join(", ") || "Unknown"],
+        ["Publishers", store.publishers?.join(", ") || "Unknown"],
+        ["Platforms", this.formatPlatforms(store.platforms)],
+        ["Fetched", utils.formatDate(store.fetchedAt)],
+      ];
+      entries.forEach(([label, value]) => {
+        dl.append(utils.createElement("dt", { textContent: label }));
+        dl.append(utils.createElement("dd", { textContent: value }));
       });
-      jsonButton.addEventListener("click", () => utils.copyToClipboard(JSON.stringify(payload, null, 2)));
+      details.append(dl);
+      return details;
+    }
 
-      const dlcButton = utils.createElement("button", {
+    /**
+     * Renders the DLC section with export actions.
+     * @param {PanelState} state
+     */
+    renderDlcSection(state) {
+      const details = utils.createElement("details", { open: true });
+      details.append(utils.createElement("summary", { textContent: `DLC (${state.dlc.length})` }));
+
+      const list = utils.createElement("ul");
+      state.dlc.slice(0, 250).forEach((entry) => {
+        const li = utils.createElement("li");
+        const id = typeof entry === "string" ? entry : entry.id;
+        const name = typeof entry === "string" ? `DLC ${entry}` : entry.name;
+        li.textContent = `${id} · ${name}`;
+        list.append(li);
+      });
+      details.append(list);
+
+      const actions = utils.createElement("div", { className: "gds-grid" });
+      const copyIds = utils.createElement("button", {
         type: "button",
         textContent: "Copy DLC IDs",
       });
-      dlcButton.disabled = !payload.dlc?.length;
-      dlcButton.addEventListener("click", () => {
-        if (!payload.dlc?.length) {
-          alert("No DLC information available for this title.");
-          return;
-        }
-        utils.copyToClipboard(payload.dlc.join(", "));
+      copyIds.addEventListener("click", () => {
+        const ids = state.dlc.map((entry) => (typeof entry === "string" ? entry : entry.id)).join(", ");
+        utils.copy(ids || "");
       });
 
-      const downloadButton = utils.createElement("button", {
+      const downloadCream = utils.createElement("button", {
         type: "button",
-        textContent: "Download JSON",
+        textContent: "Download cream_api.ini",
       });
-      downloadButton.addEventListener("click", () => {
-        utils.triggerDownload(`${payload.appId}-steam-data.json`, JSON.stringify(payload, null, 2));
+      downloadCream.addEventListener("click", () => {
+        const contents = exporters.creamApi(state.appId, state.dlc);
+        utils.download(`${state.appId}_cream_api.ini`, contents);
       });
 
-      const refreshButton = utils.createElement("button", {
-        type: "button",
-        textContent: "Refresh",
-      });
-      refreshButton.addEventListener("click", state.onRefresh ?? (() => {}));
-
-      footer.append(jsonButton, dlcButton, downloadButton, refreshButton);
-      root.append(footer);
+      actions.append(copyIds, downloadCream);
+      details.append(actions);
+      return details;
     }
 
     /**
-     * Creates a reusable meta information line used in the header section.
-     * @param {string} label
-     * @param {string} value
-     * @returns {HTMLParagraphElement}
+     * Renders achievements with copying helpers.
+     * @param {PanelState} state
      */
-    createMetaLine(label, value) {
-      return createMetaLine(label, value);
-    }
+    renderAchievementsSection(state) {
+      const details = utils.createElement("details");
+      details.append(utils.createElement("summary", { textContent: `Achievements (${state.achievements.length})` }));
 
-    /**
-     * Generates a list section for DLC and package data, automatically clamping
-     * the number of entries displayed to keep the UI responsive.
-     * @param {string} title
-     * @param {Array<{ id: number | string, label: string, price?: number, discount?: number }>} items
-     * @returns {HTMLElement}
-     */
-    createListSection(title, items) {
-      const section = utils.createElement("section");
-      const heading = utils.createElement("h3", { textContent: title });
       const list = utils.createElement("ul");
-
-      utils.clamp(items).forEach((item) => {
-        const entry = utils.createElement("li");
-        entry.append(
-          utils.createElement("span", { textContent: `${item.label}` }),
-        );
-
-        if (item.price !== undefined) {
-          entry.append(utils.createElement("span", {
-            textContent: `Price: ${item.price.toFixed(2)} (Discount: ${item.discount ?? 0}%)`,
-          }));
+      state.achievements.slice(0, 250).forEach((achievement) => {
+        const li = utils.createElement("li");
+        li.textContent = `${achievement.name} · ${achievement.displayName}`;
+        if (achievement.description) {
+          li.append(utils.createElement("div", { className: "gds-meta", textContent: achievement.description }));
         }
+        list.append(li);
+      });
+      details.append(list);
 
-        list.append(entry);
+      const actions = utils.createElement("div", { className: "gds-grid" });
+      const copyJson = utils.createElement("button", {
+        type: "button",
+        textContent: "Copy achievements JSON",
+      });
+      copyJson.addEventListener("click", () => {
+        utils.copy(exporters.achievementsJson(state.achievements));
       });
 
-      section.append(heading, list);
-      return section;
+      const downloadIni = utils.createElement("button", {
+        type: "button",
+        textContent: "Download achievements.ini",
+      });
+      downloadIni.addEventListener("click", () => {
+        utils.download(`${state.appId}_achievements.ini`, exporters.achievementsIni(state.achievements));
+      });
+
+      actions.append(copyJson, downloadIni);
+      details.append(actions);
+      return details;
+    }
+
+    /**
+     * Renders depots overview.
+     * @param {PanelState} state
+     */
+    renderDepotsSection(state) {
+      const details = utils.createElement("details");
+      details.append(utils.createElement("summary", { textContent: `Depots (${state.depots.length})` }));
+
+      const list = utils.createElement("ul");
+      state.depots.slice(0, 250).forEach((depot) => {
+        const li = utils.createElement("li");
+        li.textContent = `${depot.id} · ${depot.name}`;
+        const meta = utils.createElement("div", {
+          className: "gds-meta",
+          textContent: [depot.manifests, depot.osList].filter(Boolean).join(" · "),
+        });
+        li.append(meta);
+        list.append(li);
+      });
+      details.append(list);
+
+      const actions = utils.createElement("div", { className: "gds-grid" });
+      const downloadCsv = utils.createElement("button", {
+        type: "button",
+        textContent: "Download depots.csv",
+      });
+      downloadCsv.addEventListener("click", () => {
+        utils.download(`${state.appId}_depots.csv`, exporters.depotsCsv(state.depots));
+      });
+
+      actions.append(downloadCsv);
+      details.append(actions);
+      return details;
+    }
+
+    /**
+     * Creates the footer with refresh capabilities.
+     * @param {PanelState} state
+     */
+    renderFooter(state) {
+      const footer = utils.createElement("footer");
+      const refresh = utils.createElement("button", {
+        type: "button",
+        textContent: "Refresh data",
+      });
+      refresh.addEventListener("click", () => state.onRefresh?.());
+
+      const copyJson = utils.createElement("button", {
+        type: "button",
+        textContent: "Copy store JSON",
+      });
+      copyJson.disabled = !state.store;
+      copyJson.addEventListener("click", () => {
+        if (state.store) {
+          utils.copy(JSON.stringify(state.store, null, 2));
+        }
+      });
+
+      footer.append(refresh, copyJson);
+      return footer;
+    }
+
+    /**
+     * Helper for platform string.
+     * @param {{ windows?: boolean, mac?: boolean, linux?: boolean }} platforms
+     */
+    formatPlatforms(platforms) {
+      if (!platforms) {
+        return "Unknown";
+      }
+      const enabled = Object.entries(platforms)
+        .filter(([, value]) => Boolean(value))
+        .map(([key]) => key.charAt(0).toUpperCase() + key.slice(1));
+      return enabled.length ? enabled.join(", ") : "Unknown";
     }
   }
 
   /**
-   * Helper factory that returns a formatted paragraph for metadata display.
-   * @param {string} label
-   * @param {string} value
-   * @returns {HTMLParagraphElement}
-   */
-  function createMetaLine(label, value) {
-    const paragraph = utils.createElement("p", { className: "steam-data-meta" });
-    const strong = utils.createElement("strong", { textContent: `${label}:` });
-    paragraph.append(strong, document.createTextNode(` ${value}`));
-    return paragraph;
-  }
-
-  /**
-   * Formats the platform availability section in a reader friendly way.
-   * @param {{ windows?: boolean, mac?: boolean, linux?: boolean }} platforms
-   */
-  function formatPlatforms(platforms) {
-    if (!platforms) {
-      return "Unknown";
-    }
-    const available = Object.entries(platforms)
-      .filter(([, enabled]) => Boolean(enabled))
-      .map(([name]) => name.charAt(0).toUpperCase() + name.slice(1));
-    return available.length ? available.join(", ") : "Unknown";
-  }
-
-  /**
-   * Discovers the relevant Steam App ID from the current page.
-   * Handles Steam store, SteamDB app pages, and gracefully informs the user when the script
-   * cannot operate on the current page.
+   * Attempts to extract the appId from the current page by using multiple
+   * strategies so both Steam and SteamDB URLs are supported.
    * @returns {string | null}
    */
   function detectAppId() {
-    const directMatch = location.pathname.match(APP_PAGE_REGEX);
-    if (directMatch) {
-      return directMatch[1];
+    const direct = location.pathname.match(APP_PAGE_REGEX);
+    if (direct) {
+      return direct[1];
     }
-
     const url = new URL(location.href);
-    const appIdParam = url.searchParams.get("appid");
-    if (appIdParam) {
-      return appIdParam;
+    const queryId = url.searchParams.get("appid");
+    if (queryId) {
+      return queryId;
     }
-
-    const ogUrl = document.querySelector('meta[property="og:url"]')?.getAttribute("content");
-    const ogMatch = ogUrl?.match(APP_PAGE_REGEX);
-    if (ogMatch) {
-      return ogMatch[1];
+    const metaUrl = document.querySelector('meta[property="og:url"]')?.getAttribute("content");
+    const metaMatch = metaUrl?.match(APP_PAGE_REGEX);
+    if (metaMatch) {
+      return metaMatch[1];
     }
-
-    const appLink = document.querySelector('a[href*="store.steampowered.com/app/"]');
-    const linkMatch = appLink?.getAttribute("href")?.match(APP_PAGE_REGEX);
-    if (linkMatch) {
-      return linkMatch[1];
-    }
-
     return null;
   }
 
   /**
-   * Boots the script, orchestrating detection, data retrieval, and rendering.
+   * Main entry point. Collects data, wires up observers and handles refreshes.
    */
   async function bootstrap() {
     const appId = detectAppId();
     const panel = new PanelController();
     const client = new AppDataClient();
 
-    const isPanelOpen = (() => {
-      const stored = utils.getSessionValue(PANEL_OPEN_KEY);
-      if (stored === null) {
-        return true;
-      }
-      try {
-        return JSON.parse(stored);
-      } catch (error) {
-        return true;
-      }
-    })();
-
     /** @type {PanelState} */
     const state = {
-      hidden: !isPanelOpen,
+      appId: appId ?? "Unknown",
+      store: null,
+      dlc: [],
+      achievements: [],
+      depots: [],
+      loading: true,
+      hidden: !utils.getPanelVisibility(),
       error: null,
       onRefresh: async () => {
-        state.error = null;
-        panel.render(null, state);
+        state.loading = true;
+        panel.render(state);
         try {
-          const payload = await client.fetchApp(appId, true);
-          panel.render(payload, state);
+          const fresh = await client.fetch(state.appId, true);
+          state.store = fresh;
+          state.loading = false;
+          panel.render(state);
         } catch (error) {
-          console.error("[Steam Data Toolkit] Refresh failed", error);
           state.error = error instanceof Error ? error.message : String(error);
-          panel.render(null, state);
+          state.loading = false;
+          panel.render(state);
         }
       },
     };
 
     if (!appId) {
-      state.error = "Unable to identify a Steam App ID on this page.";
-      panel.render(null, state);
+      state.loading = false;
+      state.error = "Unable to determine the Steam App ID for this page.";
+      panel.render(state);
       return;
     }
 
-    panel.render(null, state);
+    panel.render(state);
 
     try {
-      const payload = await client.fetchApp(appId, false);
-      panel.render(payload, state);
+      const payload = await client.fetch(appId, false);
+      state.store = payload;
+      state.loading = false;
+      panel.render(state);
     } catch (error) {
-      console.error("[Steam Data Toolkit] Initial fetch failed", error);
+      state.loading = false;
       state.error = error instanceof Error ? error.message : String(error);
-      panel.render(null, state);
+      panel.render(state);
+    }
+
+    if (location.hostname.endsWith(STEAMDB_HOST)) {
+      const updateFromSteamDb = () => {
+        const dlcEntries = SteamDbScraper.collectDlc();
+        const achievements = SteamDbScraper.collectAchievements();
+        const depots = SteamDbScraper.collectDepots();
+
+        state.dlc = dlcEntries.length ? dlcEntries : state.store?.dlc ?? [];
+        state.achievements = achievements;
+        state.depots = depots;
+        panel.render(state);
+      };
+
+      updateFromSteamDb();
+
+      const observer = new MutationObserver(utils.debounce(() => {
+        updateFromSteamDb();
+      }, 200));
+      observer.observe(document.body, { childList: true, subtree: true });
+    } else if (state.store?.dlc?.length) {
+      state.dlc = state.store.dlc;
+      panel.render(state);
     }
   }
 
   /**
-   * Definitions for JSDoc type references used across the file. They live in the same
-   * file to avoid the need for a build step while keeping type annotations precise.
+   * Type references (JSDoc) to keep the script self-documenting.
    * @typedef {Object} SteamApiResponse
    * @property {boolean} success
-   * @property {SteamAppData} data
+   * @property {SteamApiAppData} data
    *
-   * @typedef {Object} SteamAppData
-   * @property {string} name
-   * @property {string} type
-   * @property {{ date: string, coming_soon: boolean }} [release_date]
-   * @property {{ final_formatted: string }} [price_overview]
+   * @typedef {Object} SteamApiAppData
+   * @property {string} [name]
+   * @property {string} [type]
+   * @property {{ date?: string, coming_soon?: boolean }} [release_date]
+   * @property {{ final_formatted?: string }} [price_overview]
    * @property {string[]} [developers]
    * @property {string[]} [publishers]
-   * @property {number[]} [dlc]
-   * @property {Array<{ subs: Array<{ packageid: number, price_in_cents_with_discount: number, title: string, discount_pct: number }> }>} [package_groups]
+   * @property {Array<{ subs?: Array<{ packageid: number, title: string, price_in_cents_with_discount: number, discount_pct: number }> }>} [package_groups]
    * @property {{ windows?: boolean, mac?: boolean, linux?: boolean }} [platforms]
+   * @property {number[]} [dlc]
    *
    * @typedef {Object} AppPayload
    * @property {string} appId
@@ -778,18 +1124,41 @@
    * @property {{ final_formatted?: string }} [priceOverview]
    * @property {string[]} [developers]
    * @property {string[]} [publishers]
-   * @property {number[]} [dlc]
-   * @property {Array<{ id: number, title: string, price: number, discount: number }>} [packages]
    * @property {{ windows?: boolean, mac?: boolean, linux?: boolean }} [platforms]
+   * @property {string[]} [dlc]
+   * @property {Array<{ id: string, title?: string, price?: number, discount?: number }>} [packages]
    * @property {string} fetchedAt
    *
+   * @typedef {Object} SteamDbDlcEntry
+   * @property {string} id
+   * @property {string} name
+   *
+   * @typedef {Object} SteamDbAchievementEntry
+   * @property {string} name
+   * @property {string} displayName
+   * @property {string} description
+   * @property {string} icon
+   * @property {string} iconGray
+   *
+   * @typedef {Object} SteamDbDepotEntry
+   * @property {string} id
+   * @property {string} name
+   * @property {string} manifests
+   * @property {string} osList
+   *
    * @typedef {Object} PanelState
+   * @property {string} appId
+   * @property {AppPayload | null} store
+   * @property {Array<SteamDbDlcEntry | string>} dlc
+   * @property {SteamDbAchievementEntry[]} achievements
+   * @property {SteamDbDepotEntry[]} depots
+   * @property {boolean} loading
    * @property {boolean} hidden
    * @property {string | null} error
    * @property {() => void | Promise<void>} [onRefresh]
    */
 
   bootstrap().catch((error) => {
-    console.error("[Steam Data Toolkit] Bootstrap failure", error);
+    console.error("[GDS] Fatal error", error);
   });
 })();
