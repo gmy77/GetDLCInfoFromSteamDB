@@ -34,6 +34,9 @@ PYINST_FLAGS = [
     "--hidden-import",      "PIL._tkinter_finder",
     "--hidden-import",      "vdf",
     "--hidden-import",      "requests",
+    "--hidden-import",      "urllib3",
+    "--hidden-import",      "certifi",
+    "--collect-data",       "certifi",  # SSL certificates for HTTPS
     "--hidden-import",      "protect",
 ]
 
