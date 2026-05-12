@@ -29,15 +29,8 @@ python -m pip install --upgrade pip setuptools wheel
 python -m pip install pyinstaller customtkinter requests vdf Pillow
 echo.
 
-echo [3/5] (Opzionale) Vuoi installare PyArmor per protezione avanzata?
-echo       Aumenta la sicurezza ma rallenta la compilazione di ~2 minuti
-choice /C YN /M "Installare PyArmor"
-if errorlevel 2 goto skip_armor
-if errorlevel 1 (
-    echo    Installazione PyArmor...
-    python -m pip install pyarmor
-)
-:skip_armor
+echo [3/5] Protezione tramite protect.py (anti-debug + HWID integrati)...
+echo       PyArmor trial disabilitato: blocca l'esecuzione su script grandi.
 echo.
 
 echo [4/5] Compilazione in corso...

@@ -22,7 +22,7 @@ APP_VER    = "2.0.0"
 ICON_ICO   = "assets/icon.ico"      # optional — ignored if missing
 ICON_PNG   = "assets/icon.png"      # optional
 ONEFILE    = "--onedir" not in sys.argv[1:]
-USE_ARMOUR = shutil.which("pyarmor") is not None
+USE_ARMOUR = False  # PyArmor trial blocks execution on large scripts; disable
 
 PYINST_FLAGS = [
     "--noconfirm",
