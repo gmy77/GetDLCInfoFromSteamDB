@@ -151,6 +151,26 @@ class _APIClient:
         self.s = requests.Session()
         self.s.headers["User-Agent"] = f"{APP_TITLE}/{APP_VERSION}"
 
+    def _steamdb_fallback(self, app_id: str) -> List[dict]:
+        """Scrape SteamDB DLC page when Steam API returns empty."""
+        try:
+            url = f"https://steamdb.info/app/{app_id}/dlc/"
+            r = self.s.get(url, timeout=10)
+            r.raise_for_status()
+            html = r.text
+
+            # Parse <tr> with data-appid
+            dlc = []
+            for match in re.finditer(r'<tr[^>]*data-appid="(\d+)"[^>]*>.*?<td[^>]*>([^<]+)</td>', html, re.DOTALL):
+                dlc_id, name_frag = match.groups()
+                # Clean name from HTML entities
+                name = re.sub(r'<[^>]+>', '', name_frag).strip()
+                if name and dlc_id not in (app_id,):  # skip base game
+                    dlc.append({"id": dlc_id, "name": name or f"DLC {dlc_id}"})
+            return dlc[:50]  # limit to 50 to avoid spam
+        except Exception:
+            return []
+
     def game_dlc(self, app_id: str) -> List[dict]:
         try:
             r = self.s.get(_STEAM_API, params={
@@ -164,6 +184,12 @@ class _APIClient:
             dlc_ids = d["data"].get("dlc", [])
         except Exception:
             return []
+
+        # Fallback: if Steam API returns no DLC, try SteamDB scraping
+        if not dlc_ids:
+            fallback = self._steamdb_fallback(app_id)
+            if fallback:
+                return fallback  # SteamDB includes names already
 
         out = []
         for did in dlc_ids:
