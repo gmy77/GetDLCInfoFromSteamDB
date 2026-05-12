@@ -151,27 +151,54 @@ class _APIClient:
         self.s = requests.Session()
         self.s.headers["User-Agent"] = f"{APP_TITLE}/{APP_VERSION}"
 
+    def _steam_store_dlc_page(self, app_id: str) -> List[dict]:
+        """Scrape Steam Store /dlc/ page — more reliable than SteamDB (no Cloudflare)."""
+        try:
+            url = f"https://store.steampowered.com/dlc/{app_id}/"
+            r = self.s.get(url, timeout=12, headers={
+                "Accept-Language": "en-US,en;q=0.9",
+            }, cookies={
+                "wants_mature_content": "1",
+                "birthtime": "0",
+                "lastagecheckage": "1-0-1990",
+            })
+            r.raise_for_status()
+            html = r.text
+
+            dlc = []
+            # Each DLC row has data-ds-appid and a .tab_item_name
+            for m in re.finditer(
+                r'data-ds-appid="(\d+)".*?class="tab_item_name"\s*>\s*([^<]+?)\s*<',
+                html, re.DOTALL
+            ):
+                did, name = m.group(1).strip(), m.group(2).strip()
+                if did and did != app_id:
+                    dlc.append({"id": did, "name": name or f"DLC {did}"})
+            return dlc
+        except Exception:
+            return []
+
     def _steamdb_fallback(self, app_id: str) -> List[dict]:
-        """Scrape SteamDB DLC page when Steam API returns empty."""
+        """Last-resort: try SteamDB (may be blocked by Cloudflare)."""
         try:
             url = f"https://steamdb.info/app/{app_id}/dlc/"
             r = self.s.get(url, timeout=10)
             r.raise_for_status()
-            html = r.text
-
-            # Parse <tr> with data-appid
             dlc = []
-            for match in re.finditer(r'<tr[^>]*data-appid="(\d+)"[^>]*>.*?<td[^>]*>([^<]+)</td>', html, re.DOTALL):
-                dlc_id, name_frag = match.groups()
-                # Clean name from HTML entities
-                name = re.sub(r'<[^>]+>', '', name_frag).strip()
-                if name and dlc_id not in (app_id,):  # skip base game
-                    dlc.append({"id": dlc_id, "name": name or f"DLC {dlc_id}"})
-            return dlc[:50]  # limit to 50 to avoid spam
+            for m in re.finditer(
+                r'<tr[^>]*data-appid="(\d+)"[^>]*>.*?<td[^>]*>\s*([^<\n]+?)\s*</td>',
+                r.text, re.DOTALL
+            ):
+                did, name = m.group(1).strip(), m.group(2).strip()
+                if did and did != app_id:
+                    dlc.append({"id": did, "name": name or f"DLC {did}"})
+            return dlc[:50]
         except Exception:
             return []
 
     def game_dlc(self, app_id: str) -> List[dict]:
+        # 1. Steam Store API
+        dlc_ids = []
         try:
             r = self.s.get(_STEAM_API, params={
                 "appids": app_id, "cc": "us", "l": "english",
@@ -179,33 +206,35 @@ class _APIClient:
             }, timeout=12)
             r.raise_for_status()
             d = r.json().get(app_id, {})
-            if not d.get("success"):
-                return []
-            dlc_ids = d["data"].get("dlc", [])
+            if d.get("success"):
+                dlc_ids = [str(x) for x in d["data"].get("dlc", [])]
         except Exception:
-            return []
+            pass
 
-        # Fallback: if Steam API returns no DLC, try SteamDB scraping
+        # 2. If API empty → Steam Store DLC page
         if not dlc_ids:
-            fallback = self._steamdb_fallback(app_id)
-            if fallback:
-                return fallback  # SteamDB includes names already
+            page_dlc = self._steam_store_dlc_page(app_id)
+            if page_dlc:
+                return page_dlc
+            # 3. Last resort: SteamDB
+            return self._steamdb_fallback(app_id)
 
+        # Resolve names for API-sourced IDs
         out = []
         for did in dlc_ids:
             name = f"DLC {did}"
             try:
                 r2 = self.s.get(_STEAM_API, params={
-                    "appids": str(did), "cc": "us", "l": "english",
+                    "appids": did, "cc": "us", "l": "english",
                     "filters": "basic"
                 }, timeout=8)
-                d2 = r2.json().get(str(did), {})
+                d2 = r2.json().get(did, {})
                 if d2.get("success"):
                     name = d2["data"].get("name", name)
             except Exception:
                 pass
-            out.append({"id": str(did), "name": name})
-            time.sleep(0.15)  # polite rate-limit
+            out.append({"id": did, "name": name})
+            time.sleep(0.15)
         return out
 
 
