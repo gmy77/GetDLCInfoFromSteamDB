@@ -2,7 +2,23 @@
 
 > Fork maintained by **gmy77** — actively updated.
 
-## Installation
+## 🚀 NEW: Desktop Tool Available!
+
+This repository now includes a **Python desktop application** that:
+- **Automatically scans** your entire Steam library
+- **Batch processes** all games to fetch DLC info
+- **Generates configs** for CreamAPI, Goldberg, CreamLinux
+- Includes both **GUI and CLI interfaces**
+
+👉 **[See Desktop Tool Documentation](README_DESKTOP.md)**
+
+---
+
+## Browser Userscript
+
+The original browser extension is still available and maintained.
+
+### Installation
 
 1. Install a userscript manager:
    - **[Tampermonkey](https://tampermonkey.net)** _(CLOSED SOURCE)_
