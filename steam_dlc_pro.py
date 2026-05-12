@@ -214,7 +214,21 @@ class _APIClient:
         except Exception:
             return []
 
+    def _load_overrides(self) -> dict:
+        """Load manual DLC overrides from dlc_overrides.json if present."""
+        try:
+            override_file = Path("dlc_overrides.json")
+            if override_file.exists():
+                return json.load(open(override_file, encoding="utf-8"))
+        except Exception:
+            pass
+        return {}
+
     def game_dlc(self, app_id: str) -> List[dict]:
+        # Check manual overrides first
+        overrides = self._load_overrides()
+        if app_id in overrides:
+            return overrides[app_id]
         # 1. Steam Store API — no filters to get everything
         dlc_ids = []
         try:
@@ -537,7 +551,14 @@ class App(ctk.CTk if HAS_CTK else object):
             try:
                 dlc = self._client.game_dlc(app_id)
                 if not dlc:
-                    self._log("  ⚠  No DLC found — skipping")
+                    self._log("  ⚠  No DLC found via API")
+                    self._log(f"  → Check manually: https://steamdb.info/app/{app_id}/dlc/")
+                    # Auto-open SteamDB in browser
+                    try:
+                        import webbrowser
+                        webbrowser.open(f"https://steamdb.info/app/{app_id}/dlc/")
+                    except Exception:
+                        pass
                     self._set_prog(idx / total)
                     continue
                 self._log(f"  ✓ {len(dlc)} DLC entries")
