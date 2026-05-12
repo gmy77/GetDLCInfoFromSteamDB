@@ -4,13 +4,26 @@
 
 ## 🚀 NEW: Desktop Tool Available!
 
-This repository now includes a **Python desktop application** that:
+### 🎁 **Steam DLC Pro** — Single EXE, No Installation Required
+
+**Windows users:** Just download and run!
+- ⚡ **One-click EXE** — no Python installation needed
+- 🎨 **Beautiful dark-mode GUI** (customtkinter)
+- 🔍 **Auto-scans** your Steam library on launch
+- 📦 **Auto-installs** configs directly into game folders
+- 🔒 **Protected** with anti-debug, integrity checks, HWID binding
+
+👉 **[Windows Build Guide](WINDOWS_GUIDE.md)** — How to create `SteamDLCPro.exe` on your PC
+
+### 🐍 Python Desktop Tool (cross-platform)
+
+For Linux/macOS or if you prefer running Python scripts:
 - **Automatically scans** your entire Steam library
 - **Batch processes** all games to fetch DLC info
 - **Generates configs** for CreamAPI, Goldberg, CreamLinux
 - Includes both **GUI and CLI interfaces**
 
-👉 **[See Desktop Tool Documentation](README_DESKTOP.md)**
+👉 **[Python Tool Documentation](README_DESKTOP.md)**
 
 ---
 
