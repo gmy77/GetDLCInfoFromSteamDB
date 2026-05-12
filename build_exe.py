@@ -11,7 +11,7 @@ Requirements:
     pip install pyinstaller customtkinter requests vdf Pillow pyarmor
 """
 
-import subprocess, sys, shutil, os, hashlib, json, time
+import subprocess, sys, shutil, os, hashlib, time
 from pathlib import Path
 from datetime import datetime
 
@@ -21,7 +21,7 @@ APP_NAME   = "SteamDLCPro"
 APP_VER    = "2.0.0"
 ICON_ICO   = "assets/icon.ico"      # optional — ignored if missing
 ICON_PNG   = "assets/icon.png"      # optional
-ONEFILE    = "--onefile" not in sys.argv[1:] or "--onefile" in sys.argv[1:]
+ONEFILE    = "--onedir" not in sys.argv[1:]
 USE_ARMOUR = shutil.which("pyarmor") is not None
 
 PYINST_FLAGS = [
@@ -63,6 +63,18 @@ def sha256(path: Path) -> str:
             h.update(chunk)
     return h.hexdigest()
 
+def _pyarmor_version() -> tuple[int, ...]:
+    try:
+        out = subprocess.check_output(["pyarmor", "--version"],
+                                      stderr=subprocess.STDOUT).decode()
+        import re
+        m = re.search(r"(\d+)\.(\d+)", out)
+        if m:
+            return (int(m.group(1)), int(m.group(2)))
+    except Exception:
+        pass
+    return (0, 0)
+
 # ── Step 0: ensure tools ──────────────────────────────────────────────────
 def ensure_tools():
     print("[0/5] Ensuring build tools…")
@@ -73,21 +85,33 @@ def ensure_tools():
 def obfuscate() -> str:
     """Return path to obfuscated entry script, or original if pyarmor absent."""
     if not USE_ARMOUR:
-        print("[1/5] PyArmor not found — skipping obfuscation (install with: pip install pyarmor)")
+        print("[1/5] PyArmor not found — skipping obfuscation")
         return ENTRY
 
-    print("[1/5] Obfuscating with PyArmor…")
+    ver = _pyarmor_version()
+    print(f"[1/5] Obfuscating with PyArmor {ver[0]}.{ver[1]}…")
     out_dir = Path("dist_obf")
     if out_dir.exists():
         shutil.rmtree(out_dir)
-    run("pyarmor", "pack", "-e", "--onefile", "-n", APP_NAME, ENTRY)
-    # pyarmor produces its own dist — find the exe if already done
-    # For the source-only obfuscation path:
-    run("pyarmor", "obfuscate", "--output", str(out_dir), ENTRY,
-        "steam_dlc_manager.py", "protect.py")
+    out_dir.mkdir()
+
+    if ver[0] >= 9:
+        # PyArmor 9.x API: pyarmor gen --output <dir> <script>
+        extra_scripts = [f for f in ("steam_dlc_manager.py", "protect.py")
+                         if Path(f).exists()]
+        run("pyarmor", "gen", "--output", str(out_dir),
+            ENTRY, *extra_scripts)
+    else:
+        # PyArmor 7/8 legacy API
+        run("pyarmor", "obfuscate", "--output", str(out_dir),
+            ENTRY, "steam_dlc_manager.py", "protect.py")
+
     new_entry = out_dir / ENTRY
     if new_entry.exists():
+        print(f"  ✓ Obfuscated entry: {new_entry}")
         return str(new_entry)
+
+    print("  ⚠  Obfuscated file not found — falling back to plain source")
     return ENTRY
 
 # ── Step 2: inject build metadata ─────────────────────────────────────────
@@ -105,9 +129,21 @@ def inject_metadata(entry: str) -> str:
 # ── Step 3: PyInstaller compile ───────────────────────────────────────────
 def compile_exe(entry: str):
     print(f"[3/5] Compiling {entry} → EXE…")
-    run(sys.executable, "-m", "PyInstaller",
-        *PYINST_FLAGS, "--add-data", f"protect.py{os.pathsep}.",
-        entry)
+    flags = list(PYINST_FLAGS)
+
+    # If obfuscated, bundle protect.py from source; also bundle pyarmor runtime
+    entry_dir = Path(entry).parent
+    if entry_dir != Path("."):
+        flags += ["--add-data", f"protect.py{os.pathsep}."]
+        # PyArmor 9 runtime support folder (pyarmor_runtime_xxxxxx)
+        for rt in entry_dir.glob("pyarmor_runtime_*"):
+            if rt.is_dir():
+                flags += ["--add-data", f"{rt}{os.pathsep}{rt.name}"]
+                flags += ["--hidden-import", rt.name]
+    else:
+        flags += ["--add-data", f"protect.py{os.pathsep}."]
+
+    run(sys.executable, "-m", "PyInstaller", *flags, entry)
 
 # ── Step 4: post-process ──────────────────────────────────────────────────
 def post_process():
