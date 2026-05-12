@@ -130,18 +130,18 @@ def inject_metadata(entry: str) -> str:
 def compile_exe(entry: str):
     print(f"[3/5] Compiling {entry} → EXE…")
     flags = list(PYINST_FLAGS)
+    flags += ["--add-data", f"protect.py{os.pathsep}."]
 
-    # If obfuscated, bundle protect.py from source; also bundle pyarmor runtime
-    entry_dir = Path(entry).parent
-    if entry_dir != Path("."):
-        flags += ["--add-data", f"protect.py{os.pathsep}."]
-        # PyArmor 9 runtime support folder (pyarmor_runtime_xxxxxx)
-        for rt in entry_dir.glob("pyarmor_runtime_*"):
+    # Always scan dist_obf for PyArmor runtime folders (pyarmor_runtime_xxxxxx)
+    # regardless of where entry lives — inject_metadata moves entry to "."
+    # but the runtime stays in dist_obf.
+    obf_dir = Path("dist_obf")
+    if obf_dir.exists():
+        for rt in obf_dir.glob("pyarmor_runtime_*"):
             if rt.is_dir():
+                print(f"  + bundling PyArmor runtime: {rt.name}")
                 flags += ["--add-data", f"{rt}{os.pathsep}{rt.name}"]
                 flags += ["--hidden-import", rt.name]
-    else:
-        flags += ["--add-data", f"protect.py{os.pathsep}."]
 
     run(sys.executable, "-m", "PyInstaller", *flags, entry)
 
