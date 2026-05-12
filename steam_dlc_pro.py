@@ -215,17 +215,26 @@ class _APIClient:
             return []
 
     def game_dlc(self, app_id: str) -> List[dict]:
-        # 1. Steam Store API
+        # 1. Steam Store API — no filters to get everything
         dlc_ids = []
         try:
             r = self.s.get(_STEAM_API, params={
-                "appids": app_id, "cc": "us", "l": "english",
-                "filters": "basic,dlc"
+                "appids": app_id, "cc": "us", "l": "english"
+                # NO filters — get all data including package_groups
             }, timeout=12)
             r.raise_for_status()
             d = r.json().get(app_id, {})
             if d.get("success"):
-                dlc_ids = [str(x) for x in d["data"].get("dlc", [])]
+                data = d.get("data", {})
+                # Direct DLC field
+                dlc_ids = [str(x) for x in data.get("dlc", [])]
+
+                # Also check packages/bundles for DLC AppIDs
+                if not dlc_ids:
+                    for pkg_group in data.get("package_groups", []):
+                        for sub in pkg_group.get("subs", []):
+                            # Look in sub description for DLC mentions (weak signal)
+                            pass  # packageid doesn't map directly to appid
         except Exception:
             pass
 
