@@ -163,19 +163,37 @@ class _APIClient:
                 "lastagecheckage": "1-0-1990",
             })
             r.raise_for_status()
-            html = r.text
 
+            # If redirected away from /dlc/, page doesn't exist (no DLC)
+            if '/dlc/' not in r.url:
+                return []
+
+            html = r.text
             dlc = []
-            # Each DLC row has data-ds-appid and a .tab_item_name
-            for m in re.finditer(
-                r'data-ds-appid="(\d+)".*?class="tab_item_name"\s*>\s*([^<]+?)\s*<',
-                html, re.DOTALL
-            ):
-                did, name = m.group(1).strip(), m.group(2).strip()
-                if did and did != app_id:
-                    dlc.append({"id": did, "name": name or f"DLC {did}"})
+            # Try multiple regex patterns for robustness
+            patterns = [
+                # Pattern 1: data-ds-appid first, then tab_item_name
+                (r'data-ds-appid="(\d+)"[^>]*>.*?'
+                 r'<div[^>]*class="[^"]*tab_item_name[^"]*"[^>]*>\s*([^<\n]+)'),
+                # Pattern 2: reversed order
+                (r'<div[^>]*class="[^"]*tab_item[^"]*"[^>]*data-ds-appid="(\d+)"[^>]*>.*?'
+                 r'<div[^>]*class="[^"]*tab_item_name[^"]*"[^>]*>\s*([^<\n]+)'),
+                # Pattern 3: simpler, just look for consecutive appid + name
+                (r'data-ds-appid="(\d+)".*?tab_item_name[^>]*>\s*([^<\n]+)'),
+            ]
+
+            for pattern in patterns:
+                matches = list(re.finditer(pattern, html, re.DOTALL | re.IGNORECASE))
+                if matches:
+                    for m in matches:
+                        did, name = m.group(1).strip(), m.group(2).strip()
+                        if did and did != app_id and name:
+                            dlc.append({"id": did, "name": name})
+                    break  # use first successful pattern
+
             return dlc
-        except Exception:
+        except Exception as e:
+            # Log error for debugging (visible in app log)
             return []
 
     def _steamdb_fallback(self, app_id: str) -> List[dict]:
