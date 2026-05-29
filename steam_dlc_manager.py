@@ -11,6 +11,9 @@ import re
 import requests
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import lru_cache
+import time
 import vdf  # pip install vdf
 
 
@@ -110,19 +113,61 @@ class SteamLibraryScanner:
         return games
 
 
+class DLCCache:
+    """Simple disk cache for DLC data to avoid re-fetching"""
+
+    def __init__(self, cache_dir: str = ".dlc_cache", ttl_hours: int = 24):
+        self.cache_dir = Path(cache_dir)
+        self.cache_dir.mkdir(exist_ok=True)
+        self.ttl_seconds = ttl_hours * 3600
+
+    def get(self, app_id: str) -> Optional[Dict]:
+        """Get cached data if exists and not expired"""
+        cache_file = self.cache_dir / f"{app_id}.json"
+        if not cache_file.exists():
+            return None
+
+        try:
+            # Check if cache is expired
+            if time.time() - cache_file.stat().st_mtime > self.ttl_seconds:
+                return None
+
+            with open(cache_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            return None
+
+    def set(self, app_id: str, data: Dict):
+        """Save data to cache"""
+        cache_file = self.cache_dir / f"{app_id}.json"
+        try:
+            with open(cache_file, 'w', encoding='utf-8') as f:
+                json.dump(data, f)
+        except Exception:
+            pass
+
+
 class SteamAPIClient:
     """Fetches DLC information from Steam Store API"""
 
     API_URL = "https://store.steampowered.com/api/appdetails"
 
-    def __init__(self):
+    def __init__(self, use_cache: bool = True):
         self.session = requests.Session()
         self.session.headers.update({
             'User-Agent': 'SteamDLCManager/1.0'
         })
+        self.cache = DLCCache() if use_cache else None
+        self.max_workers = 10  # Concurrent requests limit
 
     def get_game_details(self, app_id: str) -> Optional[Dict]:
-        """Fetch game details including DLC list from Steam API"""
+        """Fetch game details including DLC list from Steam API (with caching)"""
+        # Check cache first
+        if self.cache:
+            cached = self.cache.get(app_id)
+            if cached:
+                return cached
+
         try:
             params = {
                 'appids': app_id,
@@ -131,12 +176,17 @@ class SteamAPIClient:
                 'filters': 'basic,dlc'
             }
 
-            response = self.session.get(self.API_URL, params=params, timeout=10)
+            # Reduced timeout from 10s to 5s
+            response = self.session.get(self.API_URL, params=params, timeout=5)
             response.raise_for_status()
 
             data = response.json()
             if data.get(app_id, {}).get('success'):
-                return data[app_id]['data']
+                result = data[app_id]['data']
+                # Cache the result
+                if self.cache:
+                    self.cache.set(app_id, result)
+                return result
 
             return None
 
@@ -144,28 +194,49 @@ class SteamAPIClient:
             print(f"Error fetching data for {app_id}: {e}")
             return None
 
+    def _fetch_dlc_details(self, dlc_id: int) -> Dict[str, str]:
+        """Fetch single DLC details (helper for concurrent fetching)"""
+        dlc_details = self.get_game_details(str(dlc_id))
+        if dlc_details:
+            return {
+                'id': str(dlc_id),
+                'name': dlc_details.get('name', f'DLC {dlc_id}')
+            }
+        else:
+            return {
+                'id': str(dlc_id),
+                'name': f'DLC {dlc_id}'
+            }
+
     def get_dlc_list(self, app_id: str) -> List[Dict[str, str]]:
-        """Get list of DLC for a game"""
+        """Get list of DLC for a game (with concurrent fetching)"""
         details = self.get_game_details(app_id)
         if not details:
             return []
 
         dlc_ids = details.get('dlc', [])
+        if not dlc_ids:
+            return []
+
         dlc_list = []
 
-        for dlc_id in dlc_ids:
-            # Fetch name for each DLC
-            dlc_details = self.get_game_details(str(dlc_id))
-            if dlc_details:
-                dlc_list.append({
-                    'id': str(dlc_id),
-                    'name': dlc_details.get('name', f'DLC {dlc_id}')
-                })
-            else:
-                dlc_list.append({
-                    'id': str(dlc_id),
-                    'name': f'DLC {dlc_id}'
-                })
+        # Use ThreadPoolExecutor for concurrent API requests
+        # This dramatically reduces LAG from sequential blocking
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            future_to_dlc = {executor.submit(self._fetch_dlc_details, dlc_id): dlc_id
+                           for dlc_id in dlc_ids}
+
+            for future in as_completed(future_to_dlc):
+                try:
+                    dlc_info = future.result()
+                    dlc_list.append(dlc_info)
+                except Exception as e:
+                    dlc_id = future_to_dlc[future]
+                    print(f"Error fetching DLC {dlc_id}: {e}")
+                    dlc_list.append({
+                        'id': str(dlc_id),
+                        'name': f'DLC {dlc_id}'
+                    })
 
         return dlc_list
 

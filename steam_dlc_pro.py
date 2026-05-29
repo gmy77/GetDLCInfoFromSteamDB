@@ -7,6 +7,7 @@ Auto-scans Steam library, fetches DLC, installs configs for CreamAPI/Goldberg/Cr
 import os, sys, json, re, threading, hashlib, platform, subprocess, time
 from pathlib import Path
 from typing import Dict, List, Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ── Guard: customtkinter required ──────────────────────────────────────────
 try:
@@ -155,7 +156,7 @@ class _APIClient:
         """Scrape Steam Store /dlc/ page — more reliable than SteamDB (no Cloudflare)."""
         try:
             url = f"https://store.steampowered.com/dlc/{app_id}/"
-            r = self.s.get(url, timeout=12, headers={
+            r = self.s.get(url, timeout=6, headers={  # Reduced from 12s
                 "Accept-Language": "en-US,en;q=0.9",
             }, cookies={
                 "wants_mature_content": "1",
@@ -235,7 +236,7 @@ class _APIClient:
             r = self.s.get(_STEAM_API, params={
                 "appids": app_id, "cc": "us", "l": "english"
                 # NO filters — get all data including package_groups
-            }, timeout=12)
+            }, timeout=6)  # Reduced from 12s
             r.raise_for_status()
             d = r.json().get(app_id, {})
             if d.get("success"):
@@ -260,22 +261,32 @@ class _APIClient:
             # 3. Last resort: SteamDB
             return self._steamdb_fallback(app_id)
 
-        # Resolve names for API-sourced IDs
-        out = []
-        for did in dlc_ids:
+        # Resolve names for API-sourced IDs (concurrent for speed)
+        def _fetch_dlc_name(did: str) -> dict:
             name = f"DLC {did}"
             try:
                 r2 = self.s.get(_STEAM_API, params={
                     "appids": did, "cc": "us", "l": "english",
                     "filters": "basic"
-                }, timeout=8)
+                }, timeout=5)  # Reduced from 8s
                 d2 = r2.json().get(did, {})
                 if d2.get("success"):
                     name = d2["data"].get("name", name)
             except Exception:
                 pass
-            out.append({"id": did, "name": name})
-            time.sleep(0.15)
+            return {"id": did, "name": name}
+
+        out = []
+        # Use ThreadPoolExecutor for parallel requests (eliminates sequential LAG)
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = {executor.submit(_fetch_dlc_name, did): did for did in dlc_ids}
+            for future in as_completed(futures):
+                try:
+                    out.append(future.result())
+                except Exception:
+                    did = futures[future]
+                    out.append({"id": did, "name": f"DLC {did}"})
+
         return out
 
 

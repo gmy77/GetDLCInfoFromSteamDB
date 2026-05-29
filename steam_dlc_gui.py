@@ -155,16 +155,20 @@ class SteamDLCManagerGUI:
         self.log_text = scrolledtext.ScrolledText(log_frame, height=8, wrap=tk.WORD, font=("Consolas", 9))
         self.log_text.pack(fill=tk.BOTH, expand=True)
 
-    def _log(self, message: str):
-        """Add message to log"""
+    def _log(self, message: str, force_update: bool = False):
+        """Add message to log (optimized to reduce UI LAG)"""
         self.log_text.insert(tk.END, message + "\n")
         self.log_text.see(tk.END)
-        self.root.update_idletasks()
+        # Only force UI update when explicitly needed (reduces LAG)
+        if force_update:
+            self.root.update_idletasks()
 
-    def _set_status(self, text: str, color: str = "gray"):
-        """Update status label"""
+    def _set_status(self, text: str, color: str = "gray", force_update: bool = False):
+        """Update status label (optimized to reduce UI LAG)"""
         self.status_label.config(text=text, foreground=color)
-        self.root.update_idletasks()
+        # Only force UI update when explicitly needed
+        if force_update:
+            self.root.update_idletasks()
 
     def _start_scan(self):
         """Start scanning Steam library"""
