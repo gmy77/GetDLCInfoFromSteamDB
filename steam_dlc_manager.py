@@ -238,6 +238,11 @@ class SteamAPIClient:
                         'name': f'DLC {dlc_id}'
                     })
 
+        # as_completed() yields in completion order, which is non-deterministic.
+        # Restore Steam's original DLC order so generated configs stay reproducible.
+        order = {str(dlc_id): i for i, dlc_id in enumerate(dlc_ids)}
+        dlc_list.sort(key=lambda d: order.get(d['id'], len(order)))
+
         return dlc_list
 
 

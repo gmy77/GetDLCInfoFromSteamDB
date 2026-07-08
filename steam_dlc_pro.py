@@ -287,6 +287,11 @@ class _APIClient:
                     did = futures[future]
                     out.append({"id": did, "name": f"DLC {did}"})
 
+        # as_completed() yields in completion order; restore the original DLC
+        # order so generated config files stay deterministic across runs.
+        order = {str(did): i for i, did in enumerate(dlc_ids)}
+        out.sort(key=lambda d: order.get(str(d["id"]), len(order)))
+
         return out
 
 
