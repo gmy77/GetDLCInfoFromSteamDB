@@ -278,69 +278,63 @@ class _APIClient:
         return result
 
     def _fetch_dlc(self, app_id: str) -> List[dict]:
-        # 1. Steam Store API — no filters to get everything
+        # Keep the long-standing data path: the Steam Store /dlc/ page scrape
+        # is PRIMARY (it is what actually shipped, since the Steam API URL used
+        # to be broken). The now-working API is only a fallback, so the live
+        # network behavior matches the released tool.
+
+        # 1. Steam Store /dlc/ page (primary)
+        page_dlc = self._steam_store_dlc_page(app_id)
+        if page_dlc:
+            return page_dlc
+
+        # 2. Steam Store API (fallback) — no filters to get everything
         dlc_ids = []
         try:
             r = self._get(_STEAM_API, params={
                 "appids": app_id, "cc": "us", "l": "english"
-                # NO filters — get all data including package_groups
             }, timeout=6)  # Reduced from 12s
             r.raise_for_status()
             d = r.json().get(app_id, {})
             if d.get("success"):
-                data = d.get("data", {})
-                # Direct DLC field
-                dlc_ids = [str(x) for x in data.get("dlc", [])]
-
-                # Also check packages/bundles for DLC AppIDs
-                if not dlc_ids:
-                    for pkg_group in data.get("package_groups", []):
-                        for sub in pkg_group.get("subs", []):
-                            # Look in sub description for DLC mentions (weak signal)
-                            pass  # packageid doesn't map directly to appid
+                dlc_ids = [str(x) for x in d.get("data", {}).get("dlc", [])]
         except Exception:
             pass
 
-        # 2. If API empty → Steam Store DLC page
-        if not dlc_ids:
-            page_dlc = self._steam_store_dlc_page(app_id)
-            if page_dlc:
-                return page_dlc
-            # 3. Last resort: SteamDB
-            return self._steamdb_fallback(app_id)
-
-        # Resolve names for API-sourced IDs (concurrent for speed)
-        def _fetch_dlc_name(did: str) -> dict:
-            name = f"DLC {did}"
-            try:
-                r2 = self._get(_STEAM_API, params={
-                    "appids": did, "cc": "us", "l": "english",
-                    "filters": "basic"
-                }, timeout=5)  # Reduced from 8s
-                d2 = r2.json().get(did, {})
-                if d2.get("success"):
-                    name = d2["data"].get("name", name)
-            except Exception:
-                pass
-            return {"id": did, "name": name}
-
-        out = []
-        # Use ThreadPoolExecutor for parallel requests (eliminates sequential LAG)
-        with ThreadPoolExecutor(max_workers=10) as executor:
-            futures = {executor.submit(_fetch_dlc_name, did): did for did in dlc_ids}
-            for future in as_completed(futures):
+        if dlc_ids:
+            # Resolve names for API-sourced IDs (concurrent for speed)
+            def _fetch_dlc_name(did: str) -> dict:
+                name = f"DLC {did}"
                 try:
-                    out.append(future.result())
+                    r2 = self._get(_STEAM_API, params={
+                        "appids": did, "cc": "us", "l": "english",
+                        "filters": "basic"
+                    }, timeout=5)  # Reduced from 8s
+                    d2 = r2.json().get(did, {})
+                    if d2.get("success"):
+                        name = d2["data"].get("name", name)
                 except Exception:
-                    did = futures[future]
-                    out.append({"id": did, "name": f"DLC {did}"})
+                    pass
+                return {"id": did, "name": name}
 
-        # as_completed() yields in completion order; restore the original DLC
-        # order so generated config files stay deterministic across runs.
-        order = {str(did): i for i, did in enumerate(dlc_ids)}
-        out.sort(key=lambda d: order.get(str(d["id"]), len(order)))
+            out = []
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                futures = {executor.submit(_fetch_dlc_name, did): did for did in dlc_ids}
+                for future in as_completed(futures):
+                    try:
+                        out.append(future.result())
+                    except Exception:
+                        did = futures[future]
+                        out.append({"id": did, "name": f"DLC {did}"})
 
-        return out
+            # as_completed() yields in completion order; restore the original
+            # DLC order so generated config files stay deterministic.
+            order = {str(did): i for i, did in enumerate(dlc_ids)}
+            out.sort(key=lambda d: order.get(str(d["id"]), len(order)))
+            return out
+
+        # 3. Last resort: SteamDB
+        return self._steamdb_fallback(app_id)
 
 
 # ── Config generators ─────────────────────────────────────────────────────

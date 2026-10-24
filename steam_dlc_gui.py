@@ -91,7 +91,10 @@ class SteamDLCManagerGUI:
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
         # Bind selection
-        self.tree.bind('<ButtonRelease-1>', self._on_tree_select)
+        # <<TreeviewSelect>> fires on any selection change (mouse OR keyboard),
+        # unlike <ButtonRelease-1> which missed keyboard-only selection and left
+        # self.selected_games stale.
+        self.tree.bind('<<TreeviewSelect>>', self._on_tree_select)
 
         # Options frame
         options_frame = ttk.LabelFrame(self.root, text="Options", padding=10)
@@ -191,6 +194,12 @@ class SteamDLCManagerGUI:
 
     def _populate_games_list(self):
         """Populate the games treeview"""
+        # Delete ALL existing rows, including ones a search filter has detached
+        # (get_children() alone misses detached rows -> duplicate-iid TclError
+        # when the same AppIDs are re-inserted on Refresh Library).
+        for item in self.all_items:
+            if self.tree.exists(item):
+                self.tree.delete(item)
         self.tree.delete(*self.tree.get_children())
         self.all_items = []
 
@@ -213,7 +222,9 @@ class SteamDLCManagerGUI:
             if not self.tree.exists(item):
                 continue
             values = self.tree.item(item)['values']
-            app_id, name = values[0], values[1]
+            # str(): Tkinter coerces an all-numeric title (e.g. "140") to int,
+            # which would break name.lower().
+            app_id, name = values[0], str(values[1])
 
             if query in name.lower() or query in str(app_id):
                 self.tree.reattach(item, '', tk.END)
