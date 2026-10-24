@@ -32,23 +32,13 @@ except ImportError:
 APP_VERSION = "2.0.0"
 APP_TITLE   = "Steam DLC Pro"
 
-# ── String pool (XOR-encoded, key=0x5A) ───────────────────────────────────
-_K = 0x5A
-def _d(enc: list) -> str:
-    return "".join(chr(c ^ _K) for c in enc)
-
-_STEAM_API = _d([
-    0x3f,0x3d,0x3e,0x3a,0x22,0x24,0x24,0x11,0x38,0x3e,0x3e,0x3a,0x7e,0x28,0x3e,
-    0x3a,0x29,0x33,0x36,0x37,0x29,0x3e,0x38,0x39,0x3a,0x3f,0x3a,0x3f,0x11,0x27,
-    0x28,0x2a,0x24,0x1c,0x28,0x3a,0x3b,0x3f,0x3b,0x3e,0x3f,0x24,0x22,0x3d,0x24,
-    0x38
-])  # https://store.steampowered.com/api/appdetails
-
-# ── HWID fingerprint ──────────────────────────────────────────────────────
-def _hwid() -> str:
-    parts = [platform.node(), platform.machine(), platform.processor()]
-    raw = "|".join(p for p in parts if p)
-    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+# Steam Store appdetails API endpoint.
+# NOTE: this was an XOR-"obfuscated" byte list, but the encoded bytes decoded
+# to garbage (wrong length and wrong key), so the Steam API lookup silently
+# failed on every game and the code always fell back to store-page scraping.
+# Replaced with the plain, correct URL — no obfuscation, and the API path now
+# actually works.
+_STEAM_API = "https://store.steampowered.com/api/appdetails"
 
 # ── Environment checks ─────────────────────────────────────────────────────
 def _check_env():
@@ -81,7 +71,8 @@ class _Scanner:
             cands = [Path.home() / "Library/Application Support/Steam"]
         else:
             cands = [Path.home() / ".steam/steam",
-                     Path.home() / ".local/share/Steam"]
+                     Path.home() / ".local/share/Steam",
+                     Path.home() / ".var/app/com.valvesoftware.Steam/data/Steam"]
         for p in cands:
             if p.exists() and (p / "steamapps").exists():
                 return p
@@ -146,15 +137,63 @@ class _Scanner:
 
 # ── Steam API client ──────────────────────────────────────────────────────
 class _APIClient:
+    _CACHE_DIR = Path(".dlc_cache_pro")
+    _CACHE_TTL = 24 * 3600  # seconds
+
     def __init__(self):
         self.s = requests.Session()
         self.s.headers["User-Agent"] = f"{APP_TITLE}/{APP_VERSION}"
+        self._overrides = None  # loaded once, lazily
+        try:
+            self._CACHE_DIR.mkdir(exist_ok=True)
+        except Exception:
+            pass
+
+    def _get(self, url, *, params=None, timeout=6, headers=None, cookies=None, max_retries=3):
+        """GET with 429/5xx backoff honoring Retry-After. The Steam Store API
+        throttles per IP; with concurrent workers this prevents 429s from
+        silently collapsing into empty 'no DLC' results."""
+        resp = None
+        for attempt in range(1, max_retries + 1):
+            resp = self.s.get(url, params=params, timeout=timeout,
+                              headers=headers, cookies=cookies)
+            if resp.status_code == 429 and attempt < max_retries:
+                ra = resp.headers.get("Retry-After")
+                try:
+                    delay = float(ra) if ra else 2.0 * attempt
+                except ValueError:
+                    delay = 2.0 * attempt
+                time.sleep(min(delay, 30))
+                continue
+            if 500 <= resp.status_code < 600 and attempt < max_retries:
+                time.sleep(1.5 * attempt)
+                continue
+            return resp
+        return resp
+
+    def _cache_get(self, app_id: str):
+        try:
+            f = self._CACHE_DIR / f"{app_id}.json"
+            if f.exists() and (time.time() - f.stat().st_mtime) < self._CACHE_TTL:
+                return json.load(open(f, encoding="utf-8"))
+        except Exception:
+            pass
+        return None
+
+    def _cache_set(self, app_id: str, data):
+        try:
+            tmp = self._CACHE_DIR / f"{app_id}.json.tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(data, fh)
+            os.replace(tmp, self._CACHE_DIR / f"{app_id}.json")  # atomic write
+        except Exception:
+            pass
 
     def _steam_store_dlc_page(self, app_id: str) -> List[dict]:
         """Scrape Steam Store /dlc/ page — more reliable than SteamDB (no Cloudflare)."""
         try:
             url = f"https://store.steampowered.com/dlc/{app_id}/"
-            r = self.s.get(url, timeout=6, headers={  # Reduced from 12s
+            r = self._get(url, timeout=6, headers={  # Reduced from 12s
                 "Accept-Language": "en-US,en;q=0.9",
             }, cookies={
                 "wants_mature_content": "1",
@@ -199,7 +238,7 @@ class _APIClient:
         """Last-resort: try SteamDB (may be blocked by Cloudflare)."""
         try:
             url = f"https://steamdb.info/app/{app_id}/dlc/"
-            r = self.s.get(url, timeout=10)
+            r = self._get(url, timeout=10)
             r.raise_for_status()
             dlc = []
             for m in re.finditer(
@@ -214,24 +253,35 @@ class _APIClient:
             return []
 
     def _load_overrides(self) -> dict:
-        """Load manual DLC overrides from dlc_overrides.json if present."""
-        try:
-            override_file = Path("dlc_overrides.json")
-            if override_file.exists():
-                return json.load(open(override_file, encoding="utf-8"))
-        except Exception:
-            pass
-        return {}
+        """Load manual DLC overrides from dlc_overrides.json (once, cached)."""
+        if self._overrides is None:
+            self._overrides = {}
+            try:
+                override_file = Path("dlc_overrides.json")
+                if override_file.exists():
+                    self._overrides = json.load(open(override_file, encoding="utf-8"))
+            except Exception:
+                pass
+        return self._overrides
 
     def game_dlc(self, app_id: str) -> List[dict]:
-        # Check manual overrides first
+        # Check manual overrides first (never cached — user-editable)
         overrides = self._load_overrides()
         if app_id in overrides:
             return overrides[app_id]
+        cached = self._cache_get(app_id)
+        if cached is not None:
+            return cached
+        result = self._fetch_dlc(app_id)
+        if result:
+            self._cache_set(app_id, result)
+        return result
+
+    def _fetch_dlc(self, app_id: str) -> List[dict]:
         # 1. Steam Store API — no filters to get everything
         dlc_ids = []
         try:
-            r = self.s.get(_STEAM_API, params={
+            r = self._get(_STEAM_API, params={
                 "appids": app_id, "cc": "us", "l": "english"
                 # NO filters — get all data including package_groups
             }, timeout=6)  # Reduced from 12s
@@ -263,7 +313,7 @@ class _APIClient:
         def _fetch_dlc_name(did: str) -> dict:
             name = f"DLC {did}"
             try:
-                r2 = self.s.get(_STEAM_API, params={
+                r2 = self._get(_STEAM_API, params={
                     "appids": did, "cc": "us", "l": "english",
                     "filters": "basic"
                 }, timeout=5)  # Reduced from 8s

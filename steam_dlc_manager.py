@@ -27,8 +27,23 @@ class SteamLibraryScanner:
 
     def _find_steam_path(self) -> Optional[Path]:
         """Find Steam installation path based on OS"""
+        possible_paths = []
         if sys.platform == "win32":
-            possible_paths = [
+            # Prefer the registry so custom install locations are found too.
+            for hive, subkey, value in (
+                ("HKLM", r"SOFTWARE\WOW6432Node\Valve\Steam", "InstallPath"),
+                ("HKLM", r"SOFTWARE\Valve\Steam", "InstallPath"),
+                ("HKCU", r"Software\Valve\Steam", "SteamPath"),
+            ):
+                try:
+                    import winreg
+                    root = winreg.HKEY_LOCAL_MACHINE if hive == "HKLM" else winreg.HKEY_CURRENT_USER
+                    with winreg.OpenKey(root, subkey) as k:
+                        p, _ = winreg.QueryValueEx(k, value)
+                        possible_paths.append(Path(p))
+                except Exception:
+                    pass
+            possible_paths += [
                 Path("C:/Program Files (x86)/Steam"),
                 Path("C:/Program Files/Steam"),
                 Path(os.path.expandvars("%ProgramFiles(x86)%/Steam")),
@@ -37,10 +52,11 @@ class SteamLibraryScanner:
             possible_paths = [
                 Path.home() / "Library/Application Support/Steam",
             ]
-        else:  # Linux
+        else:  # Linux (including the Flatpak install location)
             possible_paths = [
                 Path.home() / ".steam/steam",
                 Path.home() / ".local/share/Steam",
+                Path.home() / ".var/app/com.valvesoftware.Steam/data/Steam",
             ]
 
         for path in possible_paths:
@@ -160,6 +176,27 @@ class SteamAPIClient:
         self.cache = DLCCache() if use_cache else None
         self.max_workers = 10  # Concurrent requests limit
 
+    def _get(self, url, params=None, timeout=5, max_retries=3):
+        """GET with 429/5xx backoff. The Steam Store API throttles per IP
+        (~200 req / 5 min), and with concurrent workers 429s are likely; this
+        honors Retry-After instead of silently returning empty results."""
+        resp = None
+        for attempt in range(1, max_retries + 1):
+            resp = self.session.get(url, params=params, timeout=timeout)
+            if resp.status_code == 429 and attempt < max_retries:
+                ra = resp.headers.get("Retry-After")
+                try:
+                    delay = float(ra) if ra else 2.0 * attempt
+                except ValueError:
+                    delay = 2.0 * attempt
+                time.sleep(min(delay, 30))
+                continue
+            if 500 <= resp.status_code < 600 and attempt < max_retries:
+                time.sleep(1.5 * attempt)
+                continue
+            return resp
+        return resp
+
     def get_game_details(self, app_id: str) -> Optional[Dict]:
         """Fetch game details including DLC list from Steam API (with caching)"""
         # Check cache first
@@ -176,8 +213,8 @@ class SteamAPIClient:
                 'filters': 'basic,dlc'
             }
 
-            # Reduced timeout from 10s to 5s
-            response = self.session.get(self.API_URL, params=params, timeout=5)
+            # Reduced timeout from 10s to 5s; _get adds 429/5xx backoff
+            response = self._get(self.API_URL, params=params, timeout=5)
             response.raise_for_status()
 
             data = response.json()
