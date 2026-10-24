@@ -1,0 +1,13 @@
+{
+  "_comment": "Manual DLC overrides when Steam API / SteamDB scraping fails",
+  "_example": {
+    "APPID": [
+      {"id": "DLC_APPID_1", "name": "DLC Name 1"},
+      {"id": "DLC_APPID_2", "name": "DLC Name 2"}
+    ]
+  },
+  "1041720": [
+    {"id": "1708020", "name": "Kingdoms of Amalur: Re-Reckoning - Fatesworn"},
+    {"id": "1708021", "name": "Kingdoms of Amalur: Re-Reckoning - Fatesworn Soundtrack"}
+  ]
+}
