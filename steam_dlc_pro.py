@@ -50,18 +50,16 @@ def _hwid() -> str:
     raw = "|".join(p for p in parts if p)
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
-# ── Anti-debug stubs ──────────────────────────────────────────────────────
+# ── Environment checks ─────────────────────────────────────────────────────
 def _check_env():
-    """Basic environment sanity checks."""
-    if sys.gettrace() is not None:
-        sys.exit(0)
-    if platform.system() == "Windows":
-        try:
-            import ctypes
-            if ctypes.windll.kernel32.IsDebuggerPresent():
-                sys.exit(0)
-        except Exception:
-            pass
+    """No-op by design.
+
+    The previous anti-debug exits (sys.gettrace() / IsDebuggerPresent ->
+    sys.exit(0)) silently killed the app under any debugger, coverage tool,
+    profiler or some IDE run modes. This project ships no obfuscation or
+    anti-tamper, so these checks are intentionally removed.
+    """
+    return
 
 # ── Steam scanner ─────────────────────────────────────────────────────────
 class _Scanner:
@@ -561,6 +559,7 @@ class App(ctk.CTk if HAS_CTK else object):
 
         total = len(selected)
         ok = 0
+        no_dlc = []
         for idx, (app_id, game) in enumerate(selected, 1):
             self._status(f"Processing {idx}/{total}…", "#4fc3f7")
             self._log(f"\n[{idx}/{total}] {game['name']}  (AppID {app_id})")
@@ -569,12 +568,7 @@ class App(ctk.CTk if HAS_CTK else object):
                 if not dlc:
                     self._log("  ⚠  No DLC found via API")
                     self._log(f"  → Check manually: https://steamdb.info/app/{app_id}/dlc/")
-                    # Auto-open SteamDB in browser
-                    try:
-                        import webbrowser
-                        webbrowser.open(f"https://steamdb.info/app/{app_id}/dlc/")
-                    except Exception:
-                        pass
+                    no_dlc.append((app_id, game["name"]))
                     self._set_prog(idx / total)
                     continue
                 self._log(f"  ✓ {len(dlc)} DLC entries")
@@ -586,6 +580,19 @@ class App(ctk.CTk if HAS_CTK else object):
             except Exception as e:
                 self._log(f"  ❌ {e}")
             self._set_prog(idx / total)
+
+        # Summarize no-DLC games once. Only auto-open a browser tab when the
+        # user processed a single game — never spam one tab per game on a batch.
+        if no_dlc:
+            self._log(f"\n⚠  {len(no_dlc)} game(s) returned no DLC via API — check on SteamDB:")
+            for aid, nm in no_dlc:
+                self._log(f"    • {nm}: https://steamdb.info/app/{aid}/dlc/")
+            if len(selected) == 1:
+                try:
+                    import webbrowser
+                    webbrowser.open(f"https://steamdb.info/app/{no_dlc[0][0]}/dlc/")
+                except Exception:
+                    pass
 
         self._status(f"Done  ({ok}/{total})", "#81c784" if ok == total else "#ffb74d")
         self._log(f"\n═══ Finished: {ok}/{total} games processed — configs in {out_dir}")
@@ -621,8 +628,30 @@ def _run_fallback():
 
     threading.Thread(target=_run, daemon=True).start()
     root.mainloop()
-    # restart
-    os.execv(sys.executable, [sys.executable] + sys.argv)
+    # Restart once, guarded against an install-failure loop: if pip failed
+    # (offline, no permissions, PEP 668 externally-managed-environment), the
+    # restarted process would still be missing deps and re-enter the installer
+    # forever. The marker lets main() show an error instead on the next launch.
+    env = dict(os.environ, _DLC_PRO_DEPS_RETRIED="1")
+    os.execve(sys.executable, [sys.executable] + sys.argv, env)
+
+
+def _show_dep_error(missing):
+    """Report why auto-install failed instead of silently looping forever."""
+    pkgs = list(dict.fromkeys(missing))
+    cmd = sys.executable + " -m pip install " + " ".join(pkgs)
+    msg = ("Could not auto-install the required dependencies:\n  "
+           + ", ".join(pkgs)
+           + "\n\nInstall them manually with:\n" + cmd)
+    print(msg, file=sys.stderr)
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+        r = tk.Tk(); r.withdraw()
+        messagebox.showerror(APP_TITLE + " — missing dependencies", msg)
+        r.destroy()
+    except Exception:
+        pass
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -632,6 +661,15 @@ def main():
     _check_env()
 
     if not (HAS_CTK and HAS_REQ and HAS_VDF):
+        missing = [name for name, ok in (
+            ("requests", HAS_REQ), ("vdf", HAS_VDF),
+            ("customtkinter", HAS_CTK), ("Pillow", HAS_CTK),
+        ) if not ok]
+        if os.environ.get("_DLC_PRO_DEPS_RETRIED") == "1":
+            # Already tried auto-installing once and deps are still missing:
+            # show the error instead of restarting into an infinite loop.
+            _show_dep_error(missing)
+            return
         _run_fallback()
         return
 

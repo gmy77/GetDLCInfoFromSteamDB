@@ -21,6 +21,7 @@ class SteamDLCManagerGUI:
         self.manager = SteamDLCManager()
         self.games_data = {}
         self.selected_games = []
+        self.all_items = []  # master list of every row id (for reliable search filtering)
 
         self._setup_ui()
         self._start_scan()
@@ -191,9 +192,11 @@ class SteamDLCManagerGUI:
     def _populate_games_list(self):
         """Populate the games treeview"""
         self.tree.delete(*self.tree.get_children())
+        self.all_items = []
 
         for app_id, game in sorted(self.games_data.items(), key=lambda x: x[1]['name']):
             self.tree.insert("", tk.END, iid=app_id, text="", values=(app_id, game['name']), tags=('unchecked',))
+            self.all_items.append(app_id)
 
         count = len(self.games_data)
         self._log(f"✓ Found {count} installed games")
@@ -203,7 +206,12 @@ class SteamDLCManagerGUI:
         """Filter games based on search query"""
         query = self.search_var.get().lower()
 
-        for item in self.tree.get_children():
+        # Iterate the master list, not get_children(): a detached item is no
+        # longer returned by get_children(), so filtering on it would lose rows
+        # permanently once a narrowing query hides them.
+        for item in self.all_items:
+            if not self.tree.exists(item):
+                continue
             values = self.tree.item(item)['values']
             app_id, name = values[0], values[1]
 
@@ -287,8 +295,8 @@ class SteamDLCManagerGUI:
                     f"Processing {i}/{t}...", "blue"
                 ))
 
-                self.root.after(0, lambda g=game: self._log(
-                    f"\n[{idx}/{total}] Processing: {g['name']} (AppID: {app_id})"
+                self.root.after(0, lambda g=game, i=idx, t=total, a=app_id: self._log(
+                    f"\n[{i}/{t}] Processing: {g['name']} (AppID: {a})"
                 ))
 
                 try:
