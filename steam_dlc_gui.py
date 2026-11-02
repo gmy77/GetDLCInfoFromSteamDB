@@ -22,6 +22,7 @@ class SteamDLCManagerGUI:
         self.games_data = {}
         self.selected_games = []
         self.all_items = []  # master list of every row id (for reliable search filtering)
+        self._processing = False  # True while a processing worker is running
 
         self._setup_ui()
         self._start_scan()
@@ -127,11 +128,12 @@ class SteamDLCManagerGUI:
         )
         self.process_btn.pack(side=tk.LEFT, padx=5)
 
-        ttk.Button(
+        self.process_all_btn = ttk.Button(
             action_frame,
             text="Process All Games",
             command=self._process_all
-        ).pack(side=tk.LEFT, padx=5)
+        )
+        self.process_all_btn.pack(side=tk.LEFT, padx=5)
 
         ttk.Button(
             action_frame,
@@ -236,6 +238,10 @@ class SteamDLCManagerGUI:
         self.selected_games = self.tree.selection()
         count = len(self.selected_games)
 
+        if self._processing:
+            # Never re-enable processing while a worker is still running.
+            return
+
         if count > 0:
             self.process_btn.config(state=tk.NORMAL)
             self._set_status(f"{count} game(s) selected", "blue")
@@ -287,11 +293,19 @@ class SteamDLCManagerGUI:
 
     def _process_games(self, app_ids: list):
         """Process list of game AppIDs"""
+        if self._processing:
+            # A worker is already running: two would write the same files
+            # concurrently and the first to finish would report completion early.
+            self._log("⚠ Processing already in progress — please wait for it to finish")
+            return
+        self._processing = True
+
         output_dir = self.output_dir_var.get()
 
         self._set_status("Processing games...", "blue")
         self.progress.start()
         self.process_btn.config(state=tk.DISABLED)
+        self.process_all_btn.config(state=tk.DISABLED)
 
         def process_thread():
             success_count = 0
@@ -345,10 +359,25 @@ class SteamDLCManagerGUI:
                 f"Successfully processed {s}/{t} games\n\nFiles saved to: {output_dir}"
             ))
             self.root.after(0, lambda: self._set_status("Complete", "green"))
-            self.root.after(0, self.progress.stop)
-            self.root.after(0, lambda: self.process_btn.config(state=tk.NORMAL))
 
-        threading.Thread(target=process_thread, daemon=True).start()
+        def runner():
+            # finally: always release the lock, even if the worker fails
+            # unexpectedly — otherwise both buttons would stay disabled forever.
+            try:
+                process_thread()
+            finally:
+                self.root.after(0, self.progress.stop)
+                self.root.after(0, self._finish_processing)
+
+        threading.Thread(target=runner, daemon=True).start()
+
+    def _finish_processing(self):
+        """Release the processing lock and restore button states (main thread)."""
+        self._processing = False
+        self.process_all_btn.config(state=tk.NORMAL)
+        self.process_btn.config(
+            state=tk.NORMAL if self.tree.selection() else tk.DISABLED
+        )
 
 
 def main():

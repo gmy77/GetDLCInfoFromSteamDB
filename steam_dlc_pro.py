@@ -248,7 +248,7 @@ class _APIClient:
                 did, name = m.group(1).strip(), m.group(2).strip()
                 if did and did != app_id:
                     dlc.append({"id": did, "name": name or f"DLC {did}"})
-            return dlc[:50]
+            return dlc  # full list: a [:50] cap silently produced incomplete configs
         except Exception:
             return []
 
@@ -354,6 +354,21 @@ def _gen_creamlinux(app_id, dlc):
     lines += [f"{d['id']}={d['name']}" for d in dlc]
     return "\n".join(lines)
 
+def _backup_once(path: Path):
+    """Keep a one-time .bak of a user's existing config before we overwrite it.
+
+    Only the first backup is kept, so a later run never replaces the user's
+    original settings (language, extra sections, hand-added DLC) with a file
+    we generated ourselves.
+    """
+    try:
+        bak = path.with_name(path.name + ".bak")
+        if path.exists() and not bak.exists():
+            bak.write_bytes(path.read_bytes())
+    except Exception:
+        pass
+
+
 def save_configs(app_id, name, dlc, out_dir: Path, install_into_game: bool = False,
                  game_path: Optional[Path] = None):
     safe = re.sub(r'[<>:"/\\|?*]', '_', name)
@@ -374,6 +389,7 @@ def save_configs(app_id, name, dlc, out_dir: Path, install_into_game: bool = Fal
     if install_into_game and game_path and game_path.exists():
         # auto-install cream_api.ini directly into game folder
         cream = game_path / "cream_api.ini"
+        _backup_once(cream)
         cream.write_text(_gen_cream(app_id, dlc), encoding="utf-8")
         saved.append(cream)
 
@@ -381,6 +397,7 @@ def save_configs(app_id, name, dlc, out_dir: Path, install_into_game: bool = Fal
         gs = game_path / "steam_settings"
         gs.mkdir(exist_ok=True)
         dlc_txt = gs / "DLC.txt"
+        _backup_once(dlc_txt)
         dlc_txt.write_text(_gen_goldberg(app_id, dlc), encoding="utf-8")
         saved.append(dlc_txt)
 
