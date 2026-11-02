@@ -240,14 +240,24 @@ class _APIClient:
             url = f"https://steamdb.info/app/{app_id}/dlc/"
             r = self._get(url, timeout=10)
             r.raise_for_status()
+            import html as _html
             dlc = []
-            for m in re.finditer(
-                r'<tr[^>]*data-appid="(\d+)"[^>]*>.*?<td[^>]*>\s*([^<\n]+?)\s*</td>',
-                r.text, re.DOTALL
+            # Same layout as SteamDbScraper.dlc() in dist/...steamdb.user.js:
+            # column 1 = AppID, column 2 = name (usually a link). The old regex
+            # grabbed the first plain-text cell, which skipped linked cells and
+            # could capture the release date or the AppID as the "name".
+            for row in re.finditer(
+                r'<tr[^>]*data-appid="(\d+)"[^>]*>(.*?)</tr>', r.text, re.DOTALL
             ):
-                did, name = m.group(1).strip(), m.group(2).strip()
-                if did and did != app_id:
-                    dlc.append({"id": did, "name": name or f"DLC {did}"})
+                did = row.group(1).strip()
+                if not did or did == app_id:
+                    continue
+                cells = re.findall(r'<td[^>]*>(.*?)</td>', row.group(2), re.DOTALL)
+                cell = cells[1] if len(cells) > 1 else (cells[0] if cells else "")
+                link = re.search(r'<a[^>]*>(.*?)</a>', cell, re.DOTALL)
+                raw = link.group(1) if link else cell
+                name = " ".join(_html.unescape(re.sub(r'<[^>]+>', '', raw)).split())
+                dlc.append({"id": did, "name": name or f"DLC {did}"})
             return dlc  # full list: a [:50] cap silently produced incomplete configs
         except Exception:
             return []
