@@ -220,11 +220,16 @@ class _APIClient:
                 (r'data-ds-appid="(\d+)".*?tab_item_name[^>]*>\s*([^<\n]+)'),
             ]
 
+            import html as _html  # local var `html` below shadows the module name
             for pattern in patterns:
                 matches = list(re.finditer(pattern, html, re.DOTALL | re.IGNORECASE))
                 if matches:
                     for m in matches:
-                        did, name = m.group(1).strip(), m.group(2).strip()
+                        did = m.group(1).strip()
+                        # Decode entities ("Rock &amp; Roll" -> "Rock & Roll") and
+                        # collapse whitespace so names written to configs match
+                        # the title shown on the Store page.
+                        name = " ".join(_html.unescape(m.group(2)).split())
                         if did and did != app_id and name:
                             dlc.append({"id": did, "name": name})
                     break  # use first successful pattern

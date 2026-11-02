@@ -187,7 +187,9 @@ class SteamDLCManagerGUI:
                 self.games_data = self.manager.scan_games()
                 self.root.after(0, self._populate_games_list)
             except Exception as e:
-                self.root.after(0, lambda: self._log(f"❌ Error scanning: {e}"))
+                # err=e: Python clears `e` when the except block ends, so the
+                # deferred callback must capture it or it raises NameError.
+                self.root.after(0, lambda err=e: self._log(f"❌ Error scanning: {err}"))
                 self.root.after(0, lambda: self._set_status("Error", "red"))
             finally:
                 self.root.after(0, self.progress.stop)
